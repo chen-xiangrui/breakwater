@@ -1,0 +1,6 @@
+{
+  "name": "breakwater-web", "version": "0.1.0", "private": true, "type": "module",
+  "scripts": {"dev":"vite --host 0.0.0.0", "build":"tsc -b && vite build", "test:e2e":"playwright test"},
+  "dependencies": {"react":"19.1.0","react-dom":"19.1.0","lucide-react":"0.511.0"},
+  "devDependencies": {"@types/react":"19.1.6","@types/react-dom":"19.1.6","@vitejs/plugin-react":"4.5.1","typescript":"5.8.3","vite":"6.3.5","@playwright/test":"1.52.0"}
+}

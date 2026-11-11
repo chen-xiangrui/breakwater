@@ -1,0 +1,60 @@
+{
+  "rows_per_baseline_side": 100000,
+  "bucket_count": 8,
+  "run_id": "29c3d26f-c4f5-4d74-8254-010e214e3865",
+  "upload_seconds": 0.267,
+  "ingestion_after_upload_seconds": 16.088,
+  "reconciliation_seconds": 14.65,
+  "report_after_publication_seconds": 2.433,
+  "observed_api_read_median_ms": 2.512,
+  "observed_api_read_max_ms": 9.18,
+  "sampled_peak_db_connections": 6,
+  "metrics": {
+    "groups": 100001,
+    "matched": 99985,
+    "missing": 3,
+    "records": 200002,
+    "findings": 16,
+    "mismatch": 10,
+    "duplicate": 3,
+    "publication_ms": 236.33
+  },
+  "report_status": "READY",
+  "stages": [
+    {
+      "kind": "batch_finalize",
+      "tasks": 2,
+      "worker_seconds": "0.057"
+    },
+    {
+      "kind": "chunk",
+      "tasks": 42,
+      "worker_seconds": "26.538"
+    },
+    {
+      "kind": "finalize",
+      "tasks": 1,
+      "worker_seconds": "0.240"
+    },
+    {
+      "kind": "parse",
+      "tasks": 2,
+      "worker_seconds": "0.573"
+    },
+    {
+      "kind": "partition",
+      "tasks": 8,
+      "worker_seconds": "18.620"
+    },
+    {
+      "kind": "prepare",
+      "tasks": 1,
+      "worker_seconds": "2.971"
+    },
+    {
+      "kind": "report",
+      "tasks": 1,
+      "worker_seconds": "1.952"
+    }
+  ]
+}

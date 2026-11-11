@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "side": "INTERNAL",
+  "broker_id": "BRK01",
+  "business_date": "2026-11-06",
+  "dataset_id": "equities_accounts_01",
+  "revision": 2,
+  "representation": "EXECUTION",
+  "account_ids": [
+    "ACC01",
+    "ACC02"
+  ],
+  "expected_bytes": 3497,
+  "expected_data_rows": 60,
+  "sha256": "0fffd33a883cb58e3200aec1c324aae37cdc9ecf06ec55531b60e7803cc6f1c7",
+  "complete": true
+}

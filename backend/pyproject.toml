@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "breakwater"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.115.12", "uvicorn==0.34.2", "python-multipart==0.0.20",
+  "SQLAlchemy==2.0.41", "psycopg[binary]==3.2.9", "alembic==1.16.1",
+  "celery==5.5.3", "pydantic==2.11.5", "httpx==0.28.1", "pytest==8.3.5",
+]
+
+[tool.setuptools.packages.find]
+include = ["breakwater*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

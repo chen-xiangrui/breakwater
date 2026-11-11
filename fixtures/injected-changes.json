@@ -1,0 +1,98 @@
+{
+  "breaks": {
+    "INTERNAL": [
+      {
+        "ref": "T1031",
+        "family": "DUPLICATE_INTERNAL"
+      }
+    ],
+    "BROKER": [
+      {
+        "ref": "T1003",
+        "family": "FIELD_MISMATCH",
+        "field": "execution_price"
+      },
+      {
+        "ref": "T1009",
+        "family": "FIELD_MISMATCH",
+        "field": "execution_price"
+      },
+      {
+        "ref": "T1018",
+        "family": "FIELD_MISMATCH",
+        "field": "execution_price"
+      },
+      {
+        "ref": "T1034",
+        "family": "FIELD_MISMATCH",
+        "field": "execution_price"
+      },
+      {
+        "ref": "T1057",
+        "family": "FIELD_MISMATCH",
+        "field": "execution_price"
+      },
+      {
+        "ref": "T1007",
+        "family": "FIELD_MISMATCH",
+        "field": "quantity"
+      },
+      {
+        "ref": "T1024",
+        "family": "FIELD_MISMATCH",
+        "field": "quantity"
+      },
+      {
+        "ref": "T1015",
+        "family": "FIELD_MISMATCH",
+        "field": "account"
+      },
+      {
+        "ref": "T1020",
+        "family": "FIELD_MISMATCH",
+        "field": "instrument"
+      },
+      {
+        "ref": "T1028",
+        "family": "FIELD_MISMATCH",
+        "field": "currency"
+      },
+      {
+        "ref": "T1011",
+        "family": "MISSING_BROKER"
+      },
+      {
+        "ref": "T1047",
+        "family": "MISSING_BROKER"
+      },
+      {
+        "ref": "T1040",
+        "family": "DUPLICATE_BROKER"
+      },
+      {
+        "ref": "T1052",
+        "family": "DUPLICATE_BROKER"
+      },
+      {
+        "ref": "B9001",
+        "family": "MISSING_INTERNAL"
+      }
+    ]
+  },
+  "corrected": {
+    "INTERNAL": [],
+    "BROKER": []
+  },
+  "empty": {
+    "INTERNAL": [],
+    "BROKER": []
+  },
+  "rejected": {
+    "INTERNAL": [],
+    "BROKER": []
+  },
+  "corrupt": {
+    "INTERNAL": [],
+    "BROKER": []
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "baseline_rows": 240,
+  "breaks": {"internal_records":241,"broker_records":241,"groups":241,"matched":225,"mismatch":10,"missing":3,"duplicate":3,"findings":16},
+  "corrected": {"internal_records":240,"broker_records":240,"groups":240,"matched":240,"findings":0},
+  "empty": {"internal_records":240,"broker_records":0,"groups":240,"missing":240,"findings":240},
+  "corrupt": {"broker_status":"BLOCKED","checks_failed":["sha256","byte_count"]},
+  "rejected": {"broker_status":"BLOCKED","accepted":239,"rejected":1,"rejected_record":1,"error_code":"INVALID_DECIMAL"}
+}

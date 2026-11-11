@@ -1,0 +1,2 @@
+const {defineConfig}=require('@playwright/test')
+module.exports=defineConfig({testDir:'./tests',testMatch:'**/*.spec.cjs',timeout:90000,expect:{timeout:20000},workers:1,reporter:'list',use:{baseURL:process.env.BASE_URL||'http://localhost:3000',headless:true,viewport:{width:1440,height:1000},launchOptions:{executablePath:process.env.CHROME_PATH||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'},screenshot:'only-on-failure',trace:'retain-on-failure'}})

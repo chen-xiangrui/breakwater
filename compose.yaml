@@ -1,0 +1,88 @@
+name: breakwater
+x-backend: &backend
+  build: ./backend
+  environment: &environment
+    DATABASE_URL: postgresql+psycopg://breakwater:breakwater@db:5432/breakwater
+    BROKER_URL: amqp://breakwater:breakwater@rabbitmq:5672//
+    OBJECT_ROOT: /data/objects
+    DEMO_MODE: "true"
+    CHUNK_SIZE: "5000"
+    LEASE_SECONDS: "20"
+  volumes:
+    - objects:/data/objects
+  depends_on:
+    db:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+  restart: unless-stopped
+services:
+  db:
+    image: postgres:17.5-alpine
+    environment:
+      POSTGRES_USER: breakwater
+      POSTGRES_PASSWORD: breakwater
+      POSTGRES_DB: breakwater
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U breakwater"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  rabbitmq:
+    image: rabbitmq:4.1.0-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: breakwater
+      RABBITMQ_DEFAULT_PASS: breakwater
+    ports:
+      - "127.0.0.1:15672:15672"
+    healthcheck:
+      test: [CMD, rabbitmq-diagnostics, -q, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  migrate:
+    <<: *backend
+    command: [sh, -c, "alembic upgrade head && python -m breakwater.seed"]
+    restart: "no"
+  api:
+    <<: *backend
+    volumes:
+      - objects:/data/objects
+      - ./backend/tests:/app/tests:ro
+      - ./fixtures:/app/fixtures
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  worker:
+    <<: *backend
+    command: [celery, -A, breakwater.jobs.celery, worker, --loglevel=INFO, --concurrency=2, --hostname=worker@%h]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  dispatcher:
+    <<: *backend
+    command: [python, -m, breakwater.dispatcher]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  web:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:3000:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  postgres:
+  objects:
+

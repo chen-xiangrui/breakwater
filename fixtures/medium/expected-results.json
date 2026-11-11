@@ -1,0 +1,20 @@
+{
+  "baseline_trades_per_side": 10000,
+  "first_run": {
+    "internal_records": 10001,
+    "broker_records": 10001,
+    "groups": 10001,
+    "matched": 9985,
+    "mismatch": 10,
+    "missing": 3,
+    "duplicate": 3,
+    "findings": 16
+  },
+  "corrected_run": {
+    "internal_records": 10000,
+    "broker_records": 10000,
+    "groups": 10000,
+    "matched": 10000,
+    "findings": 0
+  }
+}
