@@ -1,0 +1,98 @@
+const {test,expect}=require('@playwright/test')
+const fs=require('node:fs')
+const path=require('node:path')
+test.use({actionTimeout:15000})
+const csv=name=>fs.readFileSync(path.join(__dirname,'../../fixtures/small',name),'utf8')
+
+async function fillScope(form,dataset,accounts='ACC01, ACC02'){
+ await form.getByLabel('Broker ID',{exact:true}).fill('E2E-SCOPE')
+ await form.getByLabel('Broker name',{exact:true}).fill('Northstar setup test')
+ await form.getByLabel('Business date',{exact:true}).fill('2026-11-13')
+ await form.getByLabel('Dataset ID',{exact:true}).fill(dataset)
+ await form.getByLabel('Account IDs',{exact:true}).fill(accounts)
+ await expect(form.getByLabel('Internal delivery due')).toHaveValue('2026-11-13T22:00')
+}
+async function createScope(page,form){
+ const response=page.waitForResponse(r=>r.url().endsWith('/api/scopes')&&r.request().method()==='POST')
+ await form.getByRole('button',{name:'Create scope',exact:true}).click()
+ const result=await response
+ expect(result.status()).toBe(201)
+ return result.json()
+}
+async function reconcile(page,request,scope,customAccounts=false){
+ const dialog=page.getByRole('dialog',{name:'New reconciliation',exact:true})
+ await expect(dialog.getByLabel('Reconciliation scope')).toHaveValue(scope.id)
+ for(const [name,label] of [['internal.csv','Internal trades CSV'],['broker.csv','Broker trades CSV']]){
+  let content=csv(name)
+  if(customAccounts)content=content.replaceAll('ACC01','CLIENT01').replaceAll('ACC02','CLIENT02')
+  await dialog.getByLabel(label,{exact:true}).setInputFiles({name,mimeType:'text/csv',buffer:Buffer.from(content)})
+ }
+ await dialog.getByLabel('Both files are complete snapshots',{exact:false}).check()
+ const response=page.waitForResponse(r=>r.url().endsWith('/api/workflows')&&r.request().method()==='POST')
+ await dialog.getByRole('button',{name:'Run workflow',exact:true}).click()
+ const registered=await response
+ expect(registered.status()).toBe(202)
+ const workflow=await registered.json()
+ expect(workflow.scope_id).toBe(scope.id)
+ await expect(dialog).not.toBeVisible()
+ await expect(page.getByLabel('Reconciliation scope',{exact:true})).toHaveValue(scope.id)
+ await expect.poll(async()=>{
+  const result=await (await request.get('/api/workflows/'+workflow.id)).json()
+  return result.status
+ },{timeout:60000}).toBe('SUCCEEDED')
+ await expect(page.locator('.result-run')).toContainText('Run #1')
+ await expect(page.locator('.result-stat.matched strong')).toHaveText('45')
+ return workflow
+}
+
+test('create a daily scope first, then reconcile against that scope and its configured accounts',async({page,request})=>{
+ const errors=[];page.on('pageerror',e=>errors.push(e.message))
+ await page.goto('/?scope=demo-scope')
+ await expect(page.getByText('Connected',{exact:true})).toBeVisible()
+ await expect(page.locator('input[type=file]')).toHaveCount(0)
+ await page.getByRole('button',{name:'Create scope',exact:true}).click()
+ const form=page.getByRole('dialog',{name:'Create scope',exact:true})
+ const dataset='standalone-'+Date.now()
+ await fillScope(form,dataset,'CLIENT01, CLIENT02')
+ await page.screenshot({path:'test-results/create-scope-desktop.png',fullPage:true})
+ const scope=await createScope(page,form)
+ await expect(form).not.toBeVisible()
+ await expect(page.getByLabel('Reconciliation scope')).toHaveValue(scope.id)
+ const deliveries=await (await request.get(`/api/scopes/${scope.id}/deliveries`)).json()
+ expect(deliveries.deliveries).toHaveLength(2)
+ expect(deliveries.deliveries.every(d=>d.arrived_at===null&&d.batches.length===0)).toBe(true)
+ expect(await (await request.get(`/api/runs?scope_id=${scope.id}`)).json()).toEqual([])
+ await page.reload()
+ await expect(page.getByLabel('Reconciliation scope')).toHaveValue(scope.id)
+ await expect(page.locator('.result-run')).toHaveCount(0)
+ await page.getByRole('button',{name:'New reconciliation',exact:true}).click()
+ const dialog=page.getByRole('dialog',{name:'New reconciliation',exact:true})
+ await expect(dialog).toContainText('CLIENT01, CLIENT02')
+ await page.screenshot({path:'test-results/new-reconciliation-desktop.png',fullPage:true})
+ await reconcile(page,request,scope,true)
+ await page.getByLabel('Reconciliation scope').selectOption('demo-scope')
+ await expect(page).toHaveURL(/scope=demo-scope/)
+ await expect(page.locator('.context')).toContainText('BRK01')
+ expect(errors).toEqual([])
+})
+
+test('create a missing scope inside the reconciliation dialog, including mobile layout',async({page,request})=>{
+ await page.setViewportSize({width:390,height:844})
+ await page.goto('/?scope=demo-scope')
+ await expect(page.getByText('Connected',{exact:true})).toBeVisible()
+ await page.getByRole('button',{name:'New reconciliation',exact:true}).click()
+ const dialog=page.getByRole('dialog',{name:'New reconciliation',exact:true})
+ await dialog.getByRole('button',{name:'Create missing scope',exact:true}).click()
+ const dataset='inline-'+Date.now()
+ await fillScope(dialog,dataset)
+ await page.screenshot({path:'test-results/create-scope-mobile.png',fullPage:true})
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
+ const scope=await createScope(page,dialog)
+ await expect(dialog.getByLabel('Reconciliation scope')).toHaveValue(scope.id)
+ await expect(dialog.getByLabel('Account IDs',{exact:true})).toHaveCount(0)
+ await page.screenshot({path:'test-results/new-reconciliation-mobile.png',fullPage:true})
+ expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true)
+ await reconcile(page,request,scope)
+ await page.screenshot({path:'test-results/scope-dashboard-mobile.png',fullPage:true})
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
+})

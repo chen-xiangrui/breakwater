@@ -14,3 +14,48 @@
 @media(max-width:1100px) and (min-width:561px){.sidebar{width:176px;padding-left:10px;padding-right:10px}.sidebar .brand{font-size:20px;padding-left:5px}.content-shell{margin-left:176px}.content-shell .workspace-main{padding-left:23px;padding-right:23px}.delivery-title{padding:13px}.delivery-file{padding:0 13px}.delivery-counts{gap:12px;padding-left:13px;padding-right:13px}.delivery-check{padding-left:13px;padding-right:13px}.delivery-bottom{padding-left:13px;padding-right:13px}.case-table th,.case-table td{padding-left:13px;padding-right:13px}.sidebar nav button{font-size:11px;gap:9px}}
 @media(max-width:560px){.sidebar{position:sticky;top:0;inset:auto;width:100%;height:62px;padding:0 13px;flex-direction:row;align-items:center;justify-content:space-between;gap:9px;border-right:0;border-bottom:1px solid var(--line)}.sidebar .brand{padding:0}.sidebar .brand-word{display:none}.sidebar .brand-mark{margin:0;width:22px}.sidebar nav{flex-direction:row;gap:4px;margin:0;flex:1;justify-content:center}.sidebar nav button{padding:10px 8px;gap:6px;font-size:10px;white-space:nowrap}.sidebar nav button svg{width:16px;height:16px}.sidebar-footer{margin:0;padding:0;flex-direction:row;align-items:center;gap:7px}.sidebar-footer .connection{font-size:0;gap:0}.sidebar-footer .quiet{font-size:0;min-height:28px;padding:5px;align-self:auto}.sidebar-footer .quiet>span{display:none}.content-shell{margin:0}.content-shell .workspace-main{padding-top:23px}.deliveries-grid{grid-template-columns:1fr;gap:10px}.source-heading{margin-bottom:10px}.source-heading h2{font-size:12px}.source-heading .text-link{font-size:9px}.source-deliveries{margin-bottom:17px}.delivery-card{border-radius:6px}.delivery-title{padding:13px 14px 11px}.delivery-file{padding:0 14px}.delivery-counts{padding:12px 14px;gap:18px}.delivery-check{padding:0 14px 12px;font-size:9px}.delivery-bottom{padding:9px 14px}.case-table{min-width:795px}.case-table td{font-size:11px}.case-table th{font-size:9px}.case-table .reference{font-size:11px}.case-table .subline{font-size:9px}.case-table .case-ref-id{font-size:8px}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* Daily scope setup and reconciliation dialogs. */
+.workspace-heading .context{max-width:48%;min-width:0;flex-shrink:1}
+.workspace-heading .context select{width:100%;text-overflow:ellipsis}
+.scope-actions{display:flex;align-items:center;justify-content:space-between;gap:22px;padding:20px 22px;margin-bottom:22px;border:1px solid #dce6d8;border-radius:9px;background:#f0f5eb}
+.scope-actions h2{font-size:14px;color:#365c46}
+.scope-actions p{margin-top:7px;font-size:11px;line-height:1.7;color:#73846a}
+.scope-action-buttons{display:flex;gap:9px;flex-shrink:0}
+.workflow-progress{border:1px solid #e3ebd9;border-radius:8px;margin-bottom:21px}
+.recon-scope-heading{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:13px}
+.recon-scope-heading h3{font-size:13px}
+.recon-scope-label,.scope-fields>label{display:flex;flex-direction:column;gap:7px;font-size:11px;font-weight:550;color:#526b54;min-width:0}
+.recon-scope-label select{width:100%;padding:11px 30px 11px 11px;font-size:12px}
+.selected-scope{display:grid;grid-template-columns:1fr 1fr;gap:15px;padding:16px;margin:13px 0 22px;background:#f5f8f1;border:1px solid #e6eddf;border-radius:6px}
+.selected-scope small{display:block;color:#7a8c6c;font-size:10px;margin-bottom:5px}
+.selected-scope strong{font-size:11px;font-weight:500;overflow-wrap:anywhere}
+.scope-help{font-size:11px;color:#788b6b;line-height:1.7;margin:12px 0}
+.manual-workflow .scope-help{padding:0 20px 12px;margin:0}
+.modal .manual-workflow{margin-bottom:0}
+.scope-form fieldset{margin:0;padding:0;border:0;min-width:0}
+.scope-fields{display:grid;grid-template-columns:1fr 1fr;gap:17px}
+.scope-fields input,.scope-fields textarea{width:100%;min-width:0;padding:10px 11px;font-size:12px;font-weight:400}
+.scope-fields textarea{line-height:1.6;resize:vertical}
+.scope-fields .full-width{grid-column:1/-1}
+.scope-fields small{font-weight:400;font-size:10px;line-height:1.6;color:#819174}
+.deadline-heading{padding-top:21px;margin:22px 0 15px;border-top:1px solid var(--line)}
+.deadline-heading h3{font-size:12px}
+.deadline-heading p{font-size:10px;color:#819174;line-height:1.8;margin-top:6px}
+.scope-form>.alert{margin-top:17px}
+.inline-scope{border:1px solid #dfe8d6;border-radius:7px;background:#fcfdf9;padding:18px}
+.inline-scope>p{font-size:11px;color:#819174;line-height:1.7;margin:7px 0 20px}
+@media(max-width:1000px){.scope-actions{align-items:flex-start;flex-direction:column;gap:15px}.scope-action-buttons{flex-wrap:wrap}.workspace-heading .context{max-width:45%}}
+@media(max-width:560px){
+  .workspace-heading{align-items:flex-start;flex-direction:column;gap:15px}
+  .workspace-heading .context{max-width:100%;width:100%;text-align:left}
+  .workspace-heading .context select{font-size:10px}
+  .scope-actions{padding:17px;margin-bottom:17px}.scope-actions h2{font-size:13px}.scope-actions p{font-size:10px}
+  .scope-action-buttons{width:100%;display:grid;grid-template-columns:1fr 1fr;gap:7px}
+  .scope-action-buttons .btn{font-size:10px;padding:9px 8px}
+  .scope-fields,.selected-scope{grid-template-columns:1fr}
+  .scope-fields{gap:14px}.scope-fields input{min-height:40px}
+  .recon-scope-heading{align-items:flex-start;flex-wrap:wrap;gap:10px}
+  .inline-scope{padding:14px}.selected-scope{gap:12px;padding:13px}
+  .scope-form .modal-actions{flex-wrap:wrap}.scope-form .modal-actions .btn{flex:1}
+}

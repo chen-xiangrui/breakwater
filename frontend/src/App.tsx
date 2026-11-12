@@ -1,7 +1,10 @@
 import {useEffect,useState,type ReactNode} from 'react'
 import {ArrowDownToLine,ArrowRight,Check,CheckCheck,ChevronDown,ChevronLeft,ChevronRight,Clock3,FileCheck2,FileText,GitCompareArrows,History,Layers3,LoaderCircle,MoreHorizontal,Play,Plus,RefreshCw,Search,ShieldCheck,SlidersHorizontal,Upload,Users,X,TriangleAlert} from 'lucide-react'
-import ManualWorkflow from './ManualWorkflow'
-import {api,post,type Batch,type Case,type Run,type Scope,type Work,type Evidence} from './api'
+import {WorkflowStatus,type Workflow} from './ManualWorkflow'
+import Modal from './Modal'
+import ScopeForm from './ScopeForm'
+import ReconciliationModal from './ReconciliationModal'
+import {api,post,scopeLabel,type Batch,type Case,type Run,type Scope,type Work,type Evidence} from './api'
 
 const labels:Record<string,string>={FIELD_MISMATCH:'Field mismatch',MISSING_BROKER:'Missing at broker',MISSING_INTERNAL:'Missing internally',DUPLICATE_INTERNAL:'Internal duplicate',DUPLICATE_BROKER:'Broker duplicate',NOT_PRESENT_IN_INPUTS:'Needs review',UNASSESSABLE:'Needs review'}
 const nice=(s:string)=>labels[s]||s.toLowerCase().replaceAll('_',' ').replace(/^./,x=>x.toUpperCase())
@@ -14,15 +17,12 @@ const running=(r:Run)=>['QUEUED','RUNNING','FINALIZING'].includes(r.status)
 
 function Badge({value}:{value:string}){return <span className={'badge '+value.toLowerCase()}><i/>{nice(value)}</span>}
 function Empty({icon=<Layers3 size={25}/>,title,children}:{icon?:ReactNode;title:string;children?:ReactNode}){return <div className="empty"><div className="empty-icon">{icon}</div><h3>{title}</h3>{children}</div>}
-function Modal({title,subtitle,children,onClose,wide=false}:{title:string;subtitle?:string;children:ReactNode;onClose:()=>void;wide?:boolean}){
- useEffect(()=>{const fn=(e:KeyboardEvent)=>{if(e.key==='Escape')onClose()};window.addEventListener('keydown',fn);return()=>window.removeEventListener('keydown',fn)},[onClose])
- return <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><section role="dialog" aria-modal="true" aria-label={title} className={'modal '+(wide?'wide':'')}><div className="modal-head"><div><h2>{title}</h2>{subtitle&&<p>{subtitle}</p>}</div><button aria-label="Close dialog" className="icon-btn" onClick={onClose}><X size={20}/></button></div>{children}</section></div>
-}
-
 export default function App(){
  const initial=new URLSearchParams(location.search)
  const [view,setView]=useState<'reconciliation'|'history'>(location.hash==='#history'?'history':'reconciliation')
- const [scopes,setScopes]=useState<Scope[]>([]),[sid,setSid]=useState('demo-scope')
+ const [scopes,setScopes]=useState<Scope[]>([]),[sid,setSid]=useState(initial.get('scope')||'')
+ const [reconOpen,setReconOpen]=useState(false),[scopeOpen,setScopeOpen]=useState(false),[creatingScope,setCreatingScope]=useState(false)
+ const [latestWorkflow,setLatestWorkflow]=useState<Workflow|null>(null),[followWorkflow,setFollowWorkflow]=useState<string|null>(null)
  const [deliveries,setDeliveries]=useState<any[]>([]),[runs,setRuns]=useState<Run[]>([])
  const [runId,setRunId]=useState<string|null>(null),[run,setRun]=useState<Run|null>(null)
  const [queue,setQueue]=useState<{items:Case[];total:number;summary:any[]}>({items:[],total:0,summary:[]})
@@ -52,10 +52,10 @@ export default function App(){
  useEffect(()=>{api('/health').then(x=>setDemoMode(x.demo_mode)).catch(()=>{})},[])
  useEffect(()=>{
   const p=new URLSearchParams()
-  for(const [key,value] of Object.entries({q,family,detection,workflow,assignee:owner,case:caseId||''})){if(value)p.set(key,value)}
+  for(const [key,value] of Object.entries({scope:sid,q,family,detection,workflow,assignee:owner,case:caseId||''})){if(value)p.set(key,value)}
   if(detection==='')p.set('detection','')
   history.replaceState(null,'',`${location.pathname}${p.size?'?'+p:''}#${view}`)
- },[q,family,detection,workflow,owner,caseId,view])
+ },[sid,q,family,detection,workflow,owner,caseId,view])
  useEffect(()=>{setOffset(0)},[q,family,detection,workflow,owner,sid])
  useEffect(()=>{
   let alive=true,pending=false
@@ -63,13 +63,20 @@ export default function App(){
    if(pending)return
    pending=true
    try{
+    const ss=await api<Scope[]>('/scopes')
+    if(!alive)return
+    setScopes(ss)
+    if(!ss.some(s=>s.id===sid)){setSid(ss[0]?.id||'');setConnected(true);return}
     const params=new URLSearchParams({scope_id:sid,q,family,detection,workflow,assignee:owner,offset:String(offset),limit:'8'})
-    const [ss,ds,rr,cc]=await Promise.all([api<Scope[]>('/scopes'),api(`/scopes/${sid}/deliveries`),api<Run[]>(`/runs?scope_id=${sid}`),api(`/cases?${params}`)])
-    if(alive){setScopes(ss);setDeliveries(ds.deliveries);setRuns(rr);setQueue(cc);setConnected(true)}
+    const [ds,rr,cc,ww]=await Promise.all([api(`/scopes/${sid}/deliveries`),api<Run[]>(`/runs?scope_id=${sid}`),api(`/cases?${params}`),api<Workflow|null>(`/workflows?scope_id=${sid}`)])
+    if(alive){setDeliveries(ds.deliveries);setRuns(rr);setQueue(cc);setLatestWorkflow(ww);setConnected(true)}
    }catch(e){if(alive){setConnected(false);setError((e as Error).message)}}finally{pending=false}
   }
   refresh();const id=setInterval(refresh,1500);return()=>{alive=false;clearInterval(id)}
  },[sid,q,family,detection,workflow,owner,offset])
+ useEffect(()=>{
+  if(latestWorkflow?.id===followWorkflow&&latestWorkflow.run_id){setRunId(latestWorkflow.run_id);setRun(null);setFollowWorkflow(null)}
+ },[latestWorkflow,followWorkflow])
  useEffect(()=>{
   if(!currentRun){setRun(null);return}
   let alive=true
@@ -98,6 +105,16 @@ export default function App(){
  useEffect(()=>{if(!caseId)return;const fn=(e:KeyboardEvent)=>{if(e.key==='Escape')setCaseId(null)};window.addEventListener('keydown',fn);return()=>window.removeEventListener('keydown',fn)},[caseId])
 
  async function act(fn:()=>Promise<unknown>,message?:string){setBusy(true);setError('');try{await fn();if(message)setNotice(message)}catch(e){setError((e as Error).message)}finally{setBusy(false)}}
+ function selectScope(id:string){
+  if(id===sid)return
+  setSid(id);setDeliveries([]);setRuns([]);setRun(null);setRunId(null);setSelectedInputs({})
+  setLatestWorkflow(null);setFollowWorkflow(null);setQueue({items:[],total:0,summary:[]});setCaseId(null);setInspectedRun(null);setError('')
+ }
+ function addScope(created:Scope){setScopes(previous=>[created,...previous.filter(s=>s.id!==created.id)])}
+ function registered(w:Workflow){
+  selectScope(w.scope_id);setSelectedInputs({INTERNAL:w.internal_batch_id,BROKER:w.broker_batch_id})
+  setLatestWorkflow(w);setFollowWorkflow(w.id);setRunId(null);setReconOpen(false);setView('reconciliation');setNotice('Files received. Validation and reconciliation will continue in the background.')
+ }
  async function inspectBatch(b:Batch){await act(async()=>{const [detail,reject]=await Promise.all([api(`/batches/${b.id}`),api(`/batches/${b.id}/rejections`)]);setBatchDetail(detail);setRejections(reject.items)})}
  async function inspectRun(id:string){await act(async()=>{setResults(null);setDiff(null);setResultOutcome('');setResultOffset(0);setInspectedRun(await api<Run>(`/runs/${id}`))})}
  async function loadDemo(name:string){await act(async()=>{const loaded=await post<{batches:Batch[]}>(`/demo/scenarios/${name}`,{scope_id:sid});setDeliveries(ds=>ds.map(d=>({...d,batches:[...loaded.batches.filter(b=>b.side===d.side),...d.batches]})));setSelectedInputs({});setDemoOpen(false);setMoreOpen(true)},'Files received. Open existing inputs to run them when validation completes.')}
@@ -120,7 +137,7 @@ export default function App(){
    {b?<><div className="delivery-file"><button className="text-link truncate" onClick={()=>inspectBatch(b)}>{b.filename}</button><select aria-label={`${side} source revision`} value={b.id} onChange={e=>setSelectedInputs(x=>({...x,[side]:e.target.value}))}>{d.batches.map((x:Batch)=><option key={x.id} value={x.id}>Revision {x.revision}</option>)}</select></div>
    <div className="delivery-counts"><span><strong>{fmt(b.accepted)}</strong> accepted</span><span className={b.rejected?'red':''}><strong>{fmt(b.rejected)}</strong> rejected</span><span>{(b.byte_size/1024).toFixed(1)} KB</span></div>
    <p className={'delivery-check '+(b.status==='BLOCKED'?'red':'')}>{b.status==='READY'?<ShieldCheck size={14}/>:<Clock3 size={14}/>}<span>{b.status==='READY'?(b.manifest_origin==='OPERATOR'?'CSV checks passed · completeness declared by uploader':'Integrity & completeness controls passed'):b.error||'Validating delivery'}</span></p></>:<p className="delivery-awaiting">File not received{d?` · expected ${time(d.deadline)}`:''}</p>}
-   <div className="delivery-bottom"><span className="mono">{b?`SHA ${b.sha256.slice(0,12)}`:'A complete file is required'}</span><button className="text-link" onClick={()=>setUploadSide(side)}>{b?'New revision':'Upload with manifest'} <ArrowRight size={12}/></button></div>
+   <div className="delivery-bottom"><span className="mono">{b?`SHA ${b.sha256.slice(0,12)}`:'A complete file is required'}</span><button className="text-link" onClick={()=>setReconOpen(true)}>{b?'Upload new pair':'Upload files'} <ArrowRight size={12}/></button></div>
   </article>
  }
 
@@ -134,14 +151,15 @@ export default function App(){
    <div className="sidebar-footer"><span className="connection"><span className={connected?'live-dot':'offline-dot'}/>{connected?'Connected':'Reconnecting'}</span><button className="btn quiet" aria-label="More options" onClick={()=>setMoreOpen(true)}><SlidersHorizontal size={15}/><span>Advanced options</span></button></div>
   </aside>
   <div className="content-shell"><main className="workspace-main">
-   <div className="workspace-heading"><div><h1>{view==='history'?'Run history':'Reconcile your trades'}</h1><p>{view==='history'?'Review previous runs, comparisons, and reports.':'Upload two files. Find the differences. Keep the full story.'}</p></div><div className="context">
-    {scopes.length>1?<select aria-label="Reconciliation scope" value={sid} onChange={e=>{setSid(e.target.value);setRunId(null);setSelectedInputs({})}}>{scopes.map(s=><option key={s.id} value={s.id}>{s.broker_name}</option>)}</select>:<span>{scope?.broker_name||'Loading workspace…'}</span>}
-    <small>{scope?.business_date?new Date(scope.business_date+'T12:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}):'—'}</small>
+   <div className="workspace-heading"><div><h1>{view==='history'?'Run history':'Reconcile your trades'}</h1><p>{view==='history'?'Review previous runs, comparisons, and reports.':'Prepare the day’s scope. Reconcile files. Investigate the differences.'}</p></div><div className="context">
+    {scopes.length>0?<select aria-label="Reconciliation scope" value={sid} onChange={e=>selectScope(e.target.value)}>{scopes.map(s=><option key={s.id} value={s.id}>{scopeLabel(s)}</option>)}</select>:<span>{connected?'No scopes yet':'Loading workspace…'}</span>}
+    <small>{scope?`${scope.broker_id} · ${scope.account_ids.length} accounts`:'Create a scope to get started'}</small>
    </div></div>
    {error&&<div className="alert error" role="alert"><TriangleAlert size={17}/><span>{error}</span><button className="icon-btn push" aria-label="Dismiss error" onClick={()=>setError('')}><X size={16}/></button></div>}
    {notice&&<div className="toast" role="status"><Check size={16}/>{notice}</div>}
+   <section className="scope-actions" aria-label="Daily reconciliation setup"><div><h2>{scope?'Ready for the next reconciliation?':'Set up your first reconciliation'}</h2><p>Create a scope for the day, then upload a pair of files to start a run.</p></div><div className="scope-action-buttons"><button className="btn secondary" onClick={()=>setScopeOpen(true)}><Plus size={15}/>Create scope</button><button className="btn primary" onClick={()=>setReconOpen(true)}><Play size={15}/>New reconciliation</button></div></section>
    <div className="reconciliation-view" hidden={view!=='reconciliation'}>
-   <ManualWorkflow scope={scope} onRegistered={w=>{setSelectedInputs({INTERNAL:w.internal_batch_id,BROKER:w.broker_batch_id});api(`/scopes/${sid}/deliveries`).then(ds=>setDeliveries(ds.deliveries)).catch(()=>{})}} onRunReady={id=>{setRunId(id);setRun(null);document.getElementById('results')?.scrollIntoView({behavior:'smooth',block:'nearest'})}} onInspect={id=>act(async()=>inspectBatch(await api(`/batches/${id}`)))}/>
+   <WorkflowStatus workflow={latestWorkflow} onInspect={id=>act(async()=>inspectBatch(await api(`/batches/${id}`)))}/>
 
    {(run||displayRun)&&<section className="panel results-panel" id="results" aria-label="Reconciliation results">
     <div className="result-heading"><div className="result-run"><span>Run #{run?.sequence||displayRun?.sequence}</span><Badge value={run?.status||displayRun!.status}/>{run&&running(run)&&<small>{run.partitions?.filter(p=>p.state==='SUCCEEDED').length||0} / {run.bucket_count} partitions complete</small>}</div><div className="result-actions">{displayRun?.report_status==='READY'&&<a className="btn secondary small-btn" href={`/api/runs/${displayRun.id}/report`}><ArrowDownToLine size={14}/>Download report</a>}{displayRun&&<button className="icon-btn" aria-label="Inspect run" onClick={()=>inspectRun(displayRun.id)}><ChevronRight size={18}/></button>}</div></div>
@@ -150,14 +168,14 @@ export default function App(){
     {run&&<details className="technical-details"><summary>Processing details <ChevronDown size={14}/></summary>{runDetails(run)}</details>}
    </section>}
 
-   <section className="source-deliveries" aria-label="Source deliveries"><div className="source-heading"><h2>Source deliveries</h2><button className="text-link" disabled={!ready||busy} onClick={()=>setConfirmRun(true)}>Start reconciliation <Play size={12}/></button></div><div className="deliveries-grid">{deliveryCard('INTERNAL')}{deliveryCard('BROKER')}</div></section>
+   {scope&&<section className="source-deliveries" aria-label="Source deliveries"><div className="source-heading"><h2>Source deliveries</h2><button className="text-link" disabled={!ready||busy} onClick={()=>setConfirmRun(true)}>Compare existing inputs <Play size={12}/></button></div><div className="deliveries-grid">{deliveryCard('INTERNAL')}{deliveryCard('BROKER')}</div></section>}
 
    <section className="panel cases-panel" aria-label="Discrepancies">
     <div className="queue-heading"><div><h2>Discrepancies <span className="count-tag">{queue.total}</span></h2></div><div className="queue-controls"><select aria-label="Detection filter" value={detection} onChange={e=>setDetection(e.target.value)}><option value="PRESENT">Current</option><option value="CLEARED">Cleared</option><option value="NOT_PRESENT_IN_INPUTS">Needs review</option><option value="">All cases</option></select><button className={'icon-btn '+(filtersOpen?'selected':'')} aria-label="Filter discrepancies" aria-expanded={filtersOpen} onClick={()=>setFiltersOpen(x=>!x)}><SlidersHorizontal size={17}/></button></div></div>
     <div className="queue-search"><Search size={16}/><input aria-label="Search cases" placeholder="Search a trade reference…" value={q} onChange={e=>setQ(e.target.value)}/><span>{scope?.account_ids.length||0} accounts</span></div>
     {filtersOpen&&<div className="filters"><select aria-label="Discrepancy filter" value={family} onChange={e=>setFamily(e.target.value)}><option value="">All issue types</option>{['FIELD_MISMATCH','MISSING_BROKER','MISSING_INTERNAL','DUPLICATE_INTERNAL','DUPLICATE_BROKER'].map(x=><option key={x} value={x}>{nice(x)}</option>)}</select><select aria-label="Workflow filter" value={workflow} onChange={e=>setWorkflow(e.target.value)}><option value="">All statuses</option>{['OPEN','IN_REVIEW','WAIVED','RESOLVED'].map(x=><option key={x} value={x}>{nice(x)}</option>)}</select><select aria-label="Owner filter" value={owner} onChange={e=>setOwner(e.target.value)}><option value="">All owners</option><option>Alice</option><option>Bob</option></select><button className="text-link" onClick={()=>{setQ('');setFamily('');setWorkflow('');setDetection('');setOwner('')}}>Reset filters</button></div>}
     <div className="table-scroll"><table className="case-table"><thead><tr><th>Reference</th><th>Discrepancy</th><th>Instrument / account</th><th>Difference</th><th>Status</th><th>Owner</th><th/></tr></thead><tbody>{queue.items.map(c=>{const row=(c.evidence.internal[0]||c.evidence.broker[0])?.normalized,d=c.evidence.differences[0];return <tr key={c.id} tabIndex={0} onClick={()=>setCaseId(c.id)} onKeyDown={e=>{if(e.key==='Enter')setCaseId(c.id)}}><td><span className="reference">{c.reconciliation_ref}</span><span className="subline mono case-ref-id">BW-{short(c.id).toUpperCase()}</span></td><td><span className={'issue-dot '+c.family.toLowerCase()}/>{nice(c.family)}</td><td><strong>{row?.instrument||'—'}</strong><span className="subline">{row?.account||'—'} · {row?.side||'—'}</span></td><td>{d?<><span>{fieldName(d.field)}</span><span className="subline mono">{d.internal} → {d.broker}</span></>:<span className="muted">{c.evidence.internal.length} internal / {c.evidence.broker.length} broker</span>}</td><td><Badge value={c.workflow}/>{c.detection!=='PRESENT'&&<span className="subline">{nice(c.detection)}</span>}</td><td>{c.assignee?<span className="owner"><span className="avatar small">{c.assignee[0]}</span>{c.assignee}</span>:<span className="muted">Unassigned</span>}</td><td><ChevronRight size={16}/></td></tr>})}</tbody></table></div>
-    {!queue.items.length&&<Empty icon={<CheckCheck size={25}/>} title={published?'No discrepancies in this view':'Your results will appear here'}><p>{published?'All clear here. Choose another filter to review previous cases.':'Upload an internal and broker CSV above, then run the workflow.'}</p></Empty>}
+    {!queue.items.length&&<Empty icon={<CheckCheck size={25}/>} title={published?'No discrepancies in this view':'Your results will appear here'}><p>{published?'All clear here. Choose another filter to review previous cases.':'Choose New reconciliation to select a scope and upload your two CSV files.'}</p></Empty>}
     <div className="table-footer"><span>{queue.total?`${offset+1}–${Math.min(offset+8,queue.total)} of ${queue.total} cases`:'0 cases'}</span><div><button className="icon-btn" aria-label="Previous case page" disabled={!offset} onClick={()=>setOffset(x=>Math.max(0,x-8))}><ChevronLeft size={16}/></button><button className="icon-btn" aria-label="Next case page" disabled={offset+8>=queue.total} onClick={()=>setOffset(x=>x+8)}><ChevronRight size={16}/></button></div></div>
    </section>
    </div>
@@ -166,6 +184,9 @@ export default function App(){
   </main></div>
 
 
+
+  {scopeOpen&&<Modal title="Create scope" subtitle="Prepare a broker, business date, and dataset before the files arrive." onClose={()=>setScopeOpen(false)} busy={creatingScope} wide><ScopeForm defaults={scope} onBusyChange={setCreatingScope} onCancel={()=>setScopeOpen(false)} onCreated={created=>{addScope(created);selectScope(created.id);setScopeOpen(false);setNotice('Scope ready. Choose New reconciliation when your files arrive.')}}/></Modal>}
+  {reconOpen&&<ReconciliationModal scopes={scopes} initialScopeId={sid} onScopeCreated={addScope} onRegistered={registered} onClose={()=>setReconOpen(false)}/>}
 
   {detailRun&&<Modal title={`Run #${detailRun.sequence}`} subtitle="Immutable inputs and comparison results." onClose={()=>setInspectedRun(null)} wide>
    <div className="run-dialog-heading"><Badge value={detailRun.status}/><div className="push result-actions">{runs.some(x=>x.sequence<detailRun.sequence&&x.status==='SUCCEEDED')&&['SUCCEEDED','SUPERSEDED'].includes(detailRun.status)&&<button className="btn secondary small-btn" onClick={()=>act(async()=>{const prev=runs.find(x=>x.sequence<detailRun.sequence&&x.status==='SUCCEEDED')!;setDiff(await api(`/runs/${detailRun.id}/diff?previous_run_id=${prev.id}`))})}>Compare previous</button>}{detailRun.report_status==='READY'&&<a className="btn secondary small-btn" href={`/api/runs/${detailRun.id}/report`}><ArrowDownToLine size={14}/>Download report</a>}</div></div>

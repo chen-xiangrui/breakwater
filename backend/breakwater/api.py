@@ -1,9 +1,10 @@
 import io
 import json
 import os
+from datetime import date
 from typing import Literal
 
-from fastapi import FastAPI,UploadFile,File,Form,Header,HTTPException,Query
+from fastapi import FastAPI,UploadFile,File,Form,Header,HTTPException,Query,Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel,Field,ValidationError
 
@@ -11,6 +12,7 @@ from breakwater.db import transaction,query,one,many,uid,dumps
 from breakwater.domain import Manifest
 from breakwater.service import require,conflict,register_upload,start_run,case_action
 from breakwater import storage
+from breakwater.scopes import ScopeCreate,ScopeResponse,create_scope
 
 app=FastAPI(title='Breakwater',version='0.1.0',description='Explainable end-of-day execution reconciliation. Local demo identities; not production authentication.')
 DEMO=os.getenv('DEMO_MODE','false').lower()=='true'
@@ -29,10 +31,22 @@ def health():
 
 
 @app.get('/api/scopes')
-def scopes():
+def scopes(business_date:date|None=None,broker_id:str|None=None,dataset_id:str|None=None):
     with transaction() as c:
         return many(c,"""SELECT s.*,r.metrics,r.status AS published_status,r.sequence AS published_sequence
-            FROM scopes s LEFT JOIN runs r ON r.id=s.published_run_id WHERE NOT s.hidden ORDER BY s.business_date DESC,s.id""")
+            FROM scopes s LEFT JOIN runs r ON r.id=s.published_run_id WHERE NOT s.hidden
+            AND (CAST(:day AS date) IS NULL OR s.business_date=CAST(:day AS date))
+            AND (CAST(:broker AS text) IS NULL OR s.broker_id=:broker)
+            AND (CAST(:dataset AS text) IS NULL OR s.dataset_id=:dataset)
+            ORDER BY s.business_date DESC,s.id""",day=business_date,broker=broker_id,dataset=dataset_id)
+
+
+@app.post('/api/scopes',status_code=201,response_model=ScopeResponse,responses={200:{'model':ScopeResponse,'description':'Existing scope'}})
+def register_scope(data:ScopeCreate,response:Response,idempotency_key:str=Header(...)):
+    scope,created=create_scope(data,idempotency_key)
+    if not created:
+        response.status_code=200
+    return scope
 
 
 @app.get('/api/scopes/{sid}/deliveries')

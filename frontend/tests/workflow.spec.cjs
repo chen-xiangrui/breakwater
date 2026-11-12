@@ -4,9 +4,11 @@ const fs=require('node:fs')
 const fixture=(name)=>path.join(__dirname,'../../fixtures',name)
 
 async function choosePair(page,internal,broker){
- await page.goto('/')
+ await page.goto('/?scope=demo-scope')
  await expect(page.getByRole('heading',{name:'Reconcile your trades'})).toBeVisible()
  await expect(page.getByText('Connected',{exact:true})).toBeVisible()
+ await page.getByRole('button',{name:'New reconciliation',exact:true}).click()
+ await expect(page.getByRole('dialog',{name:'New reconciliation',exact:true})).toBeVisible()
  await page.getByLabel('Internal trades CSV',{exact:true}).setInputFiles(fixture(internal))
  await page.getByLabel('Broker trades CSV',{exact:true}).setInputFiles(fixture(broker))
  await page.getByLabel('Both files are complete snapshots',{exact:false}).check()
@@ -16,6 +18,7 @@ async function submitPair(page){
  await page.getByRole('button',{name:'Run workflow',exact:true}).click()
  const response=await created
  expect(response.status()).toBe(202)
+ await expect(page.getByRole('dialog',{name:'New reconciliation',exact:true})).not.toBeVisible()
  return response.json()
 }
 async function finish(request,w){
@@ -26,19 +29,20 @@ async function finish(request,w){
 test('full operational tables and compact sidebar preserve the reconciliation workflow',async({page,browser,request})=>{
  const errors=[];page.on('pageerror',e=>errors.push(e.message))
  const noteText='Verified the source execution '+Date.now()
- await page.goto('/')
+ await page.goto('/?scope=demo-scope')
  await expect(page.getByText('Connected',{exact:true})).toBeVisible()
  await expect(page.locator('.sidebar')).toHaveCount(1)
  const navigation=page.getByRole('navigation',{name:'Main navigation'})
  await expect(navigation.getByRole('button')).toHaveCount(2)
  await expect(page.getByLabel('Detection filter')).toHaveValue('')
  await expect(page.locator('.case-table thead th')).toHaveText(['Reference','Discrepancy','Instrument / account','Difference','Status','Owner',''])
- // Navigation is presentation only: choosing a file does not submit it or lose it.
- await page.getByLabel('Internal trades CSV',{exact:true}).setInputFiles(fixture('small/internal.csv'))
+ // File uploads are available only in the new reconciliation dialog.
+ await expect(page.getByLabel('Internal trades CSV',{exact:true})).toHaveCount(0)
  await navigation.getByRole('button',{name:'Run history',exact:true}).click()
  await expect(page.getByRole('heading',{name:'Run history',exact:true})).toBeVisible()
  await navigation.getByRole('button',{name:'Reconciliation',exact:true}).click()
- await expect(page.locator('.manual-file').first()).toContainText('internal.csv')
+ await page.getByRole('button',{name:'New reconciliation',exact:true}).click()
+ await expect(page.getByRole('dialog',{name:'New reconciliation',exact:true})).toBeVisible()
  const before=await (await request.get('/api/runs?scope_id=demo-scope')).json()
  const runButton=page.getByRole('button',{name:'Run workflow',exact:true})
  await expect(runButton).toBeDisabled()
@@ -110,7 +114,7 @@ test('full operational tables and compact sidebar preserve the reconciliation wo
 
 test('mobile layout retains the full tables and two-destination navigation',async({page})=>{
  await page.setViewportSize({width:390,height:844})
- await page.goto('/')
+ await page.goto('/?scope=demo-scope')
  await expect(page.getByRole('heading',{name:'Reconcile your trades'})).toBeVisible()
  await expect(page.getByText('Connected',{exact:true})).toBeVisible()
  await page.getByLabel('Detection filter').selectOption('')
@@ -125,7 +129,7 @@ test('advanced manifest upload and validation remain available on demand',async(
  const manifest=JSON.parse(fs.readFileSync(fixture('corrected-broker.manifest.json'),'utf8'))
  const deliveries=await (await request.get('/api/scopes/demo-scope/deliveries')).json()
  manifest.revision=deliveries.deliveries.find(d=>d.side==='BROKER').batches[0].revision+1
- await page.goto('/')
+ await page.goto('/?scope=demo-scope')
  await expect(page.getByText('Connected',{exact:true})).toBeVisible()
  await page.getByRole('button',{name:'More options'}).click()
  await page.getByText('Existing inputs & manifests',{exact:true}).click()
@@ -164,7 +168,7 @@ test('invalid manual CSV shows validation evidence without changing published re
  await finish(request,await submitPair(page))
  await expect(page.locator('.result-run .badge.succeeded')).toBeVisible()
  await expect(page.locator('.result-stat.matched strong')).toHaveText('45')
- await page.goto('/')
+ await page.goto('/?scope=demo-scope')
  await expect(page.getByText('Connected',{exact:true})).toBeVisible()
  await expect(page.locator('.case-table tbody tr').first()).toBeVisible()
  await page.screenshot({path:'test-results/sidebar-workspace-desktop.png',fullPage:true})

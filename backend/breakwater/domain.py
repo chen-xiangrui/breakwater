@@ -74,7 +74,7 @@ def normalize(raw, side, accounts):
             errors.append({'field':f,'code':'TOO_LONG','message':'Maximum 128 characters'})
     if side == 'BROKER':
         result['side'] = {'B':'BUY','S':'SELL'}.get(result['side'], result['side'])
-    for field, allowed in [('account',ACCOUNTS),('instrument',INSTRUMENTS),('currency',CURRENCIES),('side',{'BUY','SELL'})]:
+    for field, allowed in [('instrument',INSTRUMENTS),('currency',CURRENCIES),('side',{'BUY','SELL'})]:
         if result[field] not in allowed:
             errors.append({'field':field,'code':'UNKNOWN_MAPPING','message':f'Unknown {field} in equities-v1'})
     if result['account'] not in accounts:

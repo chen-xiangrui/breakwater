@@ -5,7 +5,8 @@ export type Work = {id:string;kind:string;ordinal:number;state:string;attempts:n
 export type Run = {id:string;scope_id:string;sequence:number;status:string;outcome:string|null;metrics:Record<string,number>;rule_version:string;code_version:string;hash_version:string;bucket_count:number;internal_batch_id:string;broker_batch_id:string;created_at:string;completed_at:string|null;report_status:string;error:string|null;partitions?:Work[];inputs?:Batch[];work?:Work[]}
 export type Case = {id:string;reconciliation_ref:string;family:string;workflow:string;detection:string;assignee:string|null;version:number;evidence:Evidence;first_run_id:string;last_run_id:string;created_at:string;updated_at:string;events?:{id:string;actor:string;kind:string;reason:string;created_at:string}[];observations?:{run_id:string;sequence:number;detection:string;evidence:Evidence;created_at:string}[]}
 export type Scope = {id:string;broker_name:string;broker_id:string;business_date:string;dataset_id:string;published_run_id:string|null;metrics:Record<string,number>|null;published_sequence:number|null;account_ids:string[]}
-export class ApiError extends Error { constructor(public status:number,public detail:any){super(typeof detail==='string'?detail:detail?.message||JSON.stringify(detail))} }
+export const scopeLabel=(scope:Scope)=>`${scope.broker_name} · ${scope.business_date} · ${scope.dataset_id}`
+export class ApiError extends Error { constructor(public status:number,public detail:any){super(typeof detail==='string'?detail:Array.isArray(detail)?detail.map((e:any)=>`${e.loc?.slice(1).join('.')||'Request'}: ${e.msg}`).join('; '):detail?.message||JSON.stringify(detail))} }
 export async function api<T=any>(url:string,init?:RequestInit):Promise<T>{
  const res=await fetch('/api'+url,init)
  if(!res.ok){const body=await res.json().catch(()=>({detail:res.statusText}));throw new ApiError(res.status,body.detail)}

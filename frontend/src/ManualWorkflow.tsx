@@ -1,8 +1,8 @@
 import {useEffect,useRef,useState} from 'react'
-import {ArrowRight,Check,FileText,LoaderCircle,Play,Upload,X,TriangleAlert} from 'lucide-react'
+import {ArrowRight,FileText,LoaderCircle,Play,Upload,X,TriangleAlert} from 'lucide-react'
 import {api,type Scope} from './api'
 
-type Workflow = {
+export type Workflow = {
   id:string;scope_id:string;status:string;run_id:string|null;run_sequence:number|null;
   internal_batch_id:string;broker_batch_id:string;internal_filename?:string;broker_filename?:string;
   internal_status?:string;broker_status?:string;error:string|null;
@@ -10,22 +10,25 @@ type Workflow = {
 const activeStates=['WAITING_INPUTS','WAITING_FOR_CAPACITY','QUEUED','RUNNING','FINALIZING']
 const statusLabel:Record<string,string>={WAITING_INPUTS:'Validating your files',WAITING_FOR_CAPACITY:'Waiting for processing capacity',QUEUED:'Reconciliation queued',RUNNING:'Reconciling trades',FINALIZING:'Publishing results',SUCCEEDED:'Workflow complete',BLOCKED:'File validation needs attention',FAILED:'Workflow failed',SUPERSEDED:'A newer run has been published'}
 
-export default function ManualWorkflow({scope,onRegistered,onRunReady,onInspect}:{
+export function WorkflowStatus({workflow,onInspect}:{workflow:Workflow|null;onInspect:(id:string)=>void}){
+  if(!workflow||workflow.run_id)return null
+  const active=activeStates.includes(workflow.status)
+  return <div className={'manual-status workflow-progress '+(['BLOCKED','FAILED'].includes(workflow.status)?'blocked':'')} role="status" aria-label="Manual workflow status"><span className="manual-status-icon">{active?<LoaderCircle size={19} className="spin"/>:<TriangleAlert size={19}/>}</span><div><strong>{statusLabel[workflow.status]||workflow.status}</strong><p>{workflow.error||`${workflow.internal_filename||'Internal CSV'} + ${workflow.broker_filename||'Broker CSV'}`}</p>{workflow.status==='BLOCKED'&&<div className="manual-validation-links"><button className="text-link" onClick={()=>onInspect(workflow.internal_batch_id)}>Internal validation</button><button className="text-link" onClick={()=>onInspect(workflow.broker_batch_id)}>Broker validation</button></div>}</div></div>
+}
+
+export default function ManualWorkflow({scope,onRegistered,onBusyChange}:{
   scope:Scope|undefined;
   onRegistered:(workflow:Workflow)=>void;
-  onRunReady:(id:string)=>void;
-  onInspect:(id:string)=>void;
+  onBusyChange:(busy:boolean)=>void;
 }){
   const [internal,setInternal]=useState<File|null>(null),[broker,setBroker]=useState<File|null>(null)
   const [complete,setComplete]=useState(false),[uploading,setUploading]=useState(false),[error,setError]=useState('')
   const [workflow,setWorkflow]=useState<Workflow|null>(null)
-  const key=useRef(crypto.randomUUID()),follow=useRef<string|null>(null)
-  const onRunReadyRef=useRef(onRunReady)
-  onRunReadyRef.current=onRunReady
+  const key=useRef(crypto.randomUUID())
   const active=!!workflow&&activeStates.includes(workflow.status)
 
   useEffect(()=>{
-    setWorkflow(null);setInternal(null);setBroker(null);setComplete(false);setError('');follow.current=null
+    setWorkflow(null);setInternal(null);setBroker(null);setComplete(false);setError('')
     key.current=crypto.randomUUID()
     if(!scope)return
     let alive=true,pending=false
@@ -36,7 +39,6 @@ export default function ManualWorkflow({scope,onRegistered,onRunReady,onInspect}
         const current=await api<Workflow|null>(`/workflows?scope_id=${encodeURIComponent(scope!.id)}`)
         if(alive){
           setWorkflow(current)
-          if(current?.run_id&&follow.current===current.id){follow.current=null;onRunReadyRef.current(current.run_id)}
         }
       }catch{/* The workspace connection indicator handles availability. */}
       finally{pending=false}
@@ -55,15 +57,15 @@ export default function ManualWorkflow({scope,onRegistered,onRunReady,onInspect}
 
   async function submit(){
     if(!scope||!internal||!broker||!complete||uploading||active)return
-    setUploading(true);setError('')
+    setUploading(true);onBusyChange(true);setError('')
     const form=new FormData()
     form.set('scope_id',scope.id);form.set('complete','true')
     form.set('internal_file',internal);form.set('broker_file',broker)
     try{
       const created=await api<Workflow>('/workflows',{method:'POST',headers:{'Idempotency-Key':key.current},body:form})
-      follow.current=created.id;setWorkflow(created);key.current=crypto.randomUUID();onRegistered(created)
+      setWorkflow(created);key.current=crypto.randomUUID();onRegistered(created)
     }catch(e){setError((e as Error).message)}
-    finally{setUploading(false)}
+    finally{setUploading(false);onBusyChange(false)}
   }
 
   function fileInput(side:'internal'|'broker',file:File|null){return <div className={'manual-file '+(file?'has-file':'')}>
@@ -73,10 +75,10 @@ export default function ManualWorkflow({scope,onRegistered,onRunReady,onInspect}
   </div>}
 
   return <section className="panel manual-workflow" aria-label="Upload CSVs and run workflow" id="manual-workflow">
-    <div className="panel-heading"><h2>Upload files</h2><span className="file-hint">CSV · up to 50 MiB each</span></div>
+    <div className="panel-heading"><h3>2. Upload files</h3><span className="file-hint">CSV · up to 50 MiB each</span></div>
     <div className="manual-files">{fileInput('internal',internal)}{fileInput('broker',broker)}</div>
     <div className="manual-submit"><div><label className="complete-declaration"><input type="checkbox" checked={complete} disabled={uploading} onChange={e=>{setComplete(e.target.checked);key.current=crypto.randomUUID()}}/>Both files are complete snapshots for this broker, date, and accounts.</label><p>No manifest required. Completeness is declared by you.</p></div><button className="btn primary" disabled={!scope||!internal||!broker||!complete||uploading||active} onClick={submit}>{uploading?<LoaderCircle className="spin" size={16}/>:<Play size={15} fill="currentColor"/>}{uploading?'Uploading files…':active?'Workflow in progress':'Run workflow'}{!uploading&&!active&&<ArrowRight size={15}/>}</button></div>
     {error&&<div className="alert error" role="alert"><TriangleAlert size={17}/>{error}</div>}
-    {workflow&&!workflow.run_id&&<div className={'manual-status '+(workflow.status==='BLOCKED'||workflow.status==='FAILED'?'blocked':'')} role="status" aria-label="Manual workflow status"><span className="manual-status-icon">{active?<LoaderCircle size={19} className="spin"/>:workflow.status==='SUCCEEDED'?<Check size={19}/>:<TriangleAlert size={19}/>}</span><div><strong>{statusLabel[workflow.status]||workflow.status}</strong><p>{workflow.error||`${workflow.internal_filename||internal?.name||'Internal CSV'} + ${workflow.broker_filename||broker?.name||'Broker CSV'}`}</p>{workflow.status==='BLOCKED'&&<div className="manual-validation-links"><button className="text-link" onClick={()=>onInspect(workflow.internal_batch_id)}>Internal validation</button><button className="text-link" onClick={()=>onInspect(workflow.broker_batch_id)}>Broker validation</button></div>}</div>{workflow.run_id&&<button className="text-link push" onClick={()=>onRunReady(workflow.run_id!)}>View run #{workflow.run_sequence} <ArrowRight size={14}/></button>}</div>}
+    {active&&<p className="scope-help">A workflow is already processing for this scope. Its progress is available on the dashboard.</p>}
   </section>
 }
