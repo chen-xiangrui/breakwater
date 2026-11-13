@@ -17,17 +17,20 @@ from breakwater.db import transaction,query,one,many,uid,dumps
 from breakwater.demo import fixture
 from breakwater.domain import Manifest,INTERNAL,BROKER
 
+# Tests run inside Compose by default and exercise the real API and background services.
 BASE=os.getenv('TEST_API_URL','http://api:8000/api')
 
 
 @pytest.fixture
 def client():
+    # Reuse one HTTP client per test and close its connections after the test finishes.
     with httpx.Client(base_url=BASE,timeout=15) as c:
         yield c
 
 
 @pytest.fixture
 def scope():
+    # Create an isolated hidden scope so durable test evidence stays out of the user dashboard.
     sid=uid()
     with transaction() as c:
         query(c,"""INSERT INTO scopes(id,broker_id,broker_name,business_date,dataset_id,account_ids,hidden)
@@ -38,6 +41,7 @@ def scope():
 
 
 def wait_for(fn,predicate,seconds=60):
+    # Poll asynchronous API/database state until the expected condition or a bounded timeout.
     deadline=time.monotonic()+seconds
     while time.monotonic()<deadline:
         value=fn()
@@ -48,6 +52,7 @@ def wait_for(fn,predicate,seconds=60):
 
 
 def upload(client,scope,side,scenario='breaks',revision=1,count=60,transform=None,key=None):
+    # Generate source bytes and recalculate producer controls after optional test mutations.
     data,manifest,_=fixture(side,scenario,count,revision,dataset=scope)
     if transform:
         data=transform(data)
@@ -58,24 +63,28 @@ def upload(client,scope,side,scenario='breaks',revision=1,count=60,transform=Non
 
 
 def ready(client,b):
+    # Wait for ingestion and fail the test with batch details if the input is blocked or failed.
     result=wait_for(lambda:client.get('/batches/'+b['id']).json(),lambda x:x['status'] in ['READY','BLOCKED','FAILED'])
     assert result['status']=='READY',result
     return result
 
 
 def run_pair(client,scope,a,b,buckets=8,**extra):
+    # Pin two selected batches and pass optional demo failure/recovery controls to a new run.
     response=client.post('/runs',json={'scope_id':scope,'internal_batch_id':a['id'],'broker_batch_id':b['id'],'bucket_count':buckets,**extra},headers={'Idempotency-Key':uid()})
     assert response.status_code==202,response.text
     return response.json()
 
 
 def finished(client,r):
+    # Wait for a terminal run and require successful or safely superseded completion.
     value=wait_for(lambda:client.get('/runs/'+r['id']).json(),lambda x:x['status'] in ['SUCCEEDED','SUPERSEDED','FAILED'])
     assert value['status'] in ['SUCCEEDED','SUPERSEDED'],value
     return value
 
 
 def test_end_to_end_history_concurrency_and_reports(client,scope):
+    # Establish valid inputs while checking wrong-side selection and revision conflicts.
     a,_,_=upload(client,scope,'INTERNAL')
     a=ready(client,a)
     blocked=client.post('/runs',json={'scope_id':scope,'internal_batch_id':a['id'],'broker_batch_id':a['id']},headers={'Idempotency-Key':uid()})
@@ -87,6 +96,7 @@ def test_end_to_end_history_concurrency_and_reports(client,scope):
     assert duplicate.json()['id']==b['id']
     changed=client.post('/uploads',files={'file':('changed.csv',data+b'\n')},data={'manifest':json.dumps(manifest)},headers={'Idempotency-Key':uid()})
     assert changed.status_code==409
+    # Recover from one injected failure and verify independently known discrepancy counts.
     r=finished(client,run_pair(client,scope,a,b,fail_bucket=1))
     assert r['metrics']['findings']==16
     assert r['metrics']['groups']==61
@@ -95,6 +105,7 @@ def test_end_to_end_history_concurrency_and_reports(client,scope):
     cases=client.get('/cases',params={'scope_id':scope,'limit':100}).json()
     assert cases['total']==16
     mismatch=next(x for x in cases['items'] if x['family']=='FIELD_MISMATCH')
+    # Concurrent investigators cannot both update the same expected case version.
     payload={'expected_version':mismatch['version'],'actor':'Alice','action':'claim'}
     def claim(actor):
         return client.post(f'/cases/{mismatch["id"]}/actions',json={**payload,'actor':actor})
@@ -108,18 +119,21 @@ def test_end_to_end_history_concurrency_and_reports(client,scope):
     current=note.json()
     invalid_resolve=client.post(f'/cases/{current["id"]}/actions',json={'expected_version':current['version'],'actor':actor,'action':'resolve'})
     assert invalid_resolve.status_code==409
+    # Inspect retry evidence and verify repeated broker delivery does not duplicate results.
     parts=client.get(f'/runs/{r["id"]}/partitions').json()
     assert any('injected transient' in (a['error'] or '') for a in parts['attempts'])
     wid=parts['items'][0]['id']
     assert client.post('/demo/work/'+wid,json={'action':'redeliver'}).status_code==200
     with transaction() as c:
         assert query(c,'SELECT count(*) FROM comparison_groups WHERE run_id=:id',id=r['id']).scalar()==61
+    # Database guards reject edits to READY inputs and their immutable batch metadata.
     with pytest.raises(DBAPIError):
         with transaction() as c:
             query(c,"UPDATE records SET quantity=1 WHERE batch_id=:id",id=a['id'])
     with pytest.raises(DBAPIError):
         with transaction() as c:
             query(c,"UPDATE batches SET status='PARSING' WHERE id=:id",id=a['id'])
+    # Corrected revisions clear prior issues while preserving owners, notes, and observations.
     a2,_,_=upload(client,scope,'INTERNAL','corrected',2)
     b2,_,_=upload(client,scope,'BROKER','corrected',2)
     r2=finished(client,run_pair(client,scope,ready(client,a2),ready(client,b2)))
@@ -133,6 +147,7 @@ def test_end_to_end_history_concurrency_and_reports(client,scope):
     assert client.get('/runs/'+r['id']).json()['metrics']==r['metrics']
     delta=client.get(f'/runs/{r2["id"]}/diff',params={'previous_run_id':r['id']}).json()
     assert delta['counts']['CLEARED']==15 and delta['counts']['NOT_PRESENT_IN_INPUTS']==1
+    # The generated report identifies pinned sources and matches its advertised checksum.
     report=wait_for(lambda:client.get(f'/runs/{r2["id"]}/report'),lambda x:x.status_code==200)
     assert r2['id'] in report.text and a2['sha256'] in report.text
     assert hashlib.sha256(report.content).hexdigest()==report.headers['x-artifact-sha256']
@@ -140,6 +155,7 @@ def test_end_to_end_history_concurrency_and_reports(client,scope):
 
 @pytest.mark.parametrize('scenario,code',[('corrupt','sha256'),('rejected','rejected')])
 def test_bad_inputs_are_blocked(client,scope,scenario,code):
+    # Damaged bytes and rejected rows block readiness while preserving inspectable evidence.
     b,_,_=upload(client,scope,'BROKER',scenario)
     result=wait_for(lambda:client.get('/batches/'+b['id']).json(),lambda x:x['status'] in ['BLOCKED','FAILED'])
     assert result['status']=='BLOCKED' and code in result['error']
@@ -150,6 +166,7 @@ def test_bad_inputs_are_blocked(client,scope,scenario,code):
 
 
 def test_empty_complete_inputs_and_idempotency(client,scope):
+    # Explicit empty files remain usable, and duplicate run requests reuse one resource.
     a,_,_=upload(client,scope,'INTERNAL','corrected')
     b,_,_=upload(client,scope,'BROKER','empty')
     a,b=ready(client,a),ready(client,b)
@@ -165,6 +182,7 @@ def test_empty_complete_inputs_and_idempotency(client,scope):
 
 
 def test_older_run_cannot_publish_over_newer(client,scope):
+    # Pause an older run, publish a newer one, then ensure late completion cannot replace it.
     a,_,_=upload(client,scope,'INTERNAL','corrected')
     b,_,_=upload(client,scope,'BROKER','corrected')
     a,b=ready(client,a),ready(client,b)
@@ -181,6 +199,7 @@ def test_older_run_cannot_publish_over_newer(client,scope):
 
 
 def test_record_order_and_bucket_count_do_not_change_results(client,scope):
+    # Reordered inputs and a different partition count must produce the same business findings.
     def reverse(data):
         rows=list(csv.reader(io.StringIO(data.decode())))
         out=io.StringIO(newline='');writer=csv.writer(out);writer.writerow(rows[0]);writer.writerows(reversed(rows[1:]));return out.getvalue().encode()
@@ -198,11 +217,13 @@ def test_record_order_and_bucket_count_do_not_change_results(client,scope):
 
 
 def test_fenced_old_worker_rolls_back_staged_effects():
+    # Block an attempt after a staged write, replace its token, and verify its write rolls back.
     import threading
     from breakwater import jobs
     entered=threading.Event();release=threading.Event()
     wid,stale_effect,winning_effect=uid(),uid(),uid()
     def handler(c,w):
+        # Distinct probe rows reveal whether a superseded attempt accidentally commits.
         query(c,"INSERT INTO rule_sets(id,config) VALUES(:id,'{}')",id=stale_effect if w['token']==1 else winning_effect)
         if w['token']==1:
             entered.set()
@@ -217,6 +238,7 @@ def test_fenced_old_worker_rolls_back_staged_effects():
     try:
         with transaction() as c:
             query(c,"UPDATE work SET state='QUEUED',token=token+1 WHERE id=:id",id=wid)
+        # Let the replacement finish before releasing the superseded handler.
         jobs.execute(wid)
     finally:
         release.set();worker.join(10)
@@ -229,6 +251,7 @@ def test_fenced_old_worker_rolls_back_staged_effects():
 
 
 def test_failed_partition_preserves_published_cases(client,scope):
+    # Exceed the duplicate-reference bound and ensure a failed run keeps prior publication intact.
     a,_,_=upload(client,scope,'INTERNAL')
     b,_,_=upload(client,scope,'BROKER')
     a,b=ready(client,a),ready(client,b)
@@ -247,6 +270,7 @@ def test_failed_partition_preserves_published_cases(client,scope):
 
 
 def test_sql_results_agree_with_independent_reference(client,scope):
+    # Reimplement grouping/classification independently to check the SQL pipeline's outcomes.
     a,_,_=upload(client,scope,'INTERNAL')
     b,_,_=upload(client,scope,'BROKER')
     a,b=ready(client,a),ready(client,b)
@@ -277,6 +301,7 @@ def test_sql_results_agree_with_independent_reference(client,scope):
 
 
 def test_outbox_send_failure_and_confirm_gap_are_safe(monkeypatch):
+    # Exercise broker failure and send-before-commit redelivery against durable completed work.
     from breakwater import dispatcher
     wid,oid=uid(),uid()
     with transaction() as c:

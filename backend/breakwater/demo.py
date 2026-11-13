@@ -11,6 +11,7 @@ from breakwater.domain import INTERNAL,BROKER,INSTRUMENTS
 
 
 def fixture(side,scenario='breaks',count=240,revision=1,business_date='2026-11-06',dataset='equities_accounts_01'):
+    # Build repeatable trade rows so test/demo outcomes can be independently predicted.
     symbols=['AAPL','MSFT','NVDA','AMZN','GOOGL','META','TSLA','JPM','V']
     rows=[]
     for i in range(count):
@@ -19,9 +20,11 @@ def fixture(side,scenario='breaks',count=240,revision=1,business_date='2026-11-0
     changes=[]
     if scenario=='breaks' and count>=60:
         if side=='INTERNAL':
+            # Add an identical internal duplicate for a known reconciliation reference.
             rows.append(rows[30].copy())
             changes.append({'ref':rows[30][0],'family':'DUPLICATE_INTERNAL'})
         else:
+            # Inject price, quantity, and categorical field differences on the broker side.
             for i in [2,8,17,33,56]:
                 rows[i][5]=str(Decimal(rows[i][5])+Decimal('0.05'))
                 changes.append({'ref':rows[i][0],'family':'FIELD_MISMATCH','field':'execution_price'})
@@ -33,9 +36,11 @@ def fixture(side,scenario='breaks',count=240,revision=1,business_date='2026-11-0
                     value='ACC02' if field==1 else 'NVDA'
                 rows[i][field]=value
                 changes.append({'ref':rows[i][0],'family':'FIELD_MISMATCH','field':INTERNAL[field]})
+            # Remove two broker records to produce missing-broker findings.
             for i in [10,46]:
                 changes.append({'ref':rows[i][0],'family':'MISSING_BROKER'})
             rows=[r for i,r in enumerate(rows) if i not in [10,46]]
+            # Add broker duplicates and one broker-only reference with no internal counterpart.
             for i in [38,49]:
                 rows.append(rows[i].copy())
                 changes.append({'ref':rows[i][0],'family':'DUPLICATE_BROKER'})
@@ -43,10 +48,12 @@ def fixture(side,scenario='breaks',count=240,revision=1,business_date='2026-11-0
             extra[0]='B9001'
             rows.append(extra)
             changes.append({'ref':'B9001','family':'MISSING_INTERNAL'})
+    # Exercise valid empty snapshots and invalid decimals without changing other scenarios.
     if scenario=='empty' and side=='BROKER':
         rows=[]
     if scenario=='rejected' and side=='BROKER' and rows:
         rows[0][4]='NaN'
+    # Serialize source-specific CSV headers and broker B/S direction codes.
     out=io.StringIO(newline='')
     writer=csv.writer(out,lineterminator='\n')
     writer.writerow(INTERNAL if side=='INTERNAL' else BROKER)
@@ -56,16 +63,19 @@ def fixture(side,scenario='breaks',count=240,revision=1,business_date='2026-11-0
             row[3]={'BUY':'B','SELL':'S'}[row[3]]
         writer.writerow(row)
     data=out.getvalue().encode()
+    # Declare expected file controls before any intentional corruption is applied.
     manifest={'schema_version':1,'side':side,'broker_id':'BRK01','business_date':business_date,'dataset_id':dataset,
       'revision':revision,'representation':'EXECUTION','account_ids':['ACC01','ACC02'],
       'expected_bytes':len(data),'expected_data_rows':len(rows),'sha256':hashlib.sha256(data).hexdigest(),'complete':True}
     if scenario=='corrupt' and side=='BROKER':
+        # Truncate bytes while retaining the original manifest so integrity checks fail.
         data=data[:-40]
     return data,manifest,changes
 
 
 def write_demo_sizes(root):
     """CSV-only demo pairs plus independent manifests for the advanced path."""
+    # Generate small and medium baseline/corrected pairs with their own provenance files.
     for name,count in [('small',60),('medium',10000)]:
         target=root/name
         target.mkdir(parents=True,exist_ok=True)
@@ -78,12 +88,14 @@ def write_demo_sizes(root):
                 (target/f'{filename}.csv').write_bytes(data)
                 (target/f'{filename}.manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
                 provenance[scenario][side]=changes
+        # Record expected outcomes from the known injections rather than the pipeline's output.
         answers={'baseline_trades_per_side':count,
             'first_run':{'internal_records':count+1,'broker_records':count+1,'groups':count+1,'matched':count-15,
                          'mismatch':10,'missing':3,'duplicate':3,'findings':16},
             'corrected_run':{'internal_records':count,'broker_records':count,'groups':count,'matched':count,'findings':0}}
         (target/'expected-results.json').write_text(json.dumps(answers,indent=2)+'\n')
         (target/'injected-changes.json').write_text(json.dumps(provenance,indent=2)+'\n')
+        # Include usage instructions alongside the generated fixture files.
         (target/'README.md').write_text(f'''# {name.title()} demo dataset
 
 {count:,} baseline trades per side for BRK01 / 2026-11-06 / equities_accounts_01 (ACC01 and ACC02).
@@ -100,6 +112,7 @@ Exact counts are in `expected-results.json`; individual injected differences are
 
 
 def main():
+    # Choose output location, fixture size, and whether to create both demo-size directories.
     p=argparse.ArgumentParser()
     p.add_argument('--output',default='fixtures')
     p.add_argument('--rows',type=int,default=240)
@@ -110,6 +123,7 @@ def main():
     if args.demo_sizes:
         write_demo_sizes(root)
         return
+    # Export each scenario's CSV pair, manifests, and independently tracked changes.
     provenance={}
     for scenario in ['breaks','corrected','empty','rejected','corrupt']:
         provenance[scenario]={}
@@ -123,5 +137,6 @@ def main():
 
 
 if __name__=='__main__':
+    # Support fixture generation with python -m breakwater.demo.
     main()
 

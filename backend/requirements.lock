@@ -1,3 +1,5 @@
+# Exact direct and transitive dependency versions installed by the backend Docker build.
+# This includes the API server, PostgreSQL driver/migrations, Celery transport, and tests.
 alembic==1.16.1
 amqp==5.4.2
 annotated-types==0.8.0

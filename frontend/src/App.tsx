@@ -151,13 +151,15 @@ export default function App(){
    <div className="sidebar-footer"><span className="connection"><span className={connected?'live-dot':'offline-dot'}/>{connected?'Connected':'Reconnecting'}</span><button className="btn quiet" aria-label="More options" onClick={()=>setMoreOpen(true)}><SlidersHorizontal size={15}/><span>Advanced options</span></button></div>
   </aside>
   <div className="content-shell"><main className="workspace-main">
-   <div className="workspace-heading"><div><h1>{view==='history'?'Run history':'Reconcile your trades'}</h1><p>{view==='history'?'Review previous runs, comparisons, and reports.':'Prepare the day’s scope. Reconcile files. Investigate the differences.'}</p></div><div className="context">
-    {scopes.length>0?<select aria-label="Reconciliation scope" value={sid} onChange={e=>selectScope(e.target.value)}>{scopes.map(s=><option key={s.id} value={s.id}>{scopeLabel(s)}</option>)}</select>:<span>{connected?'No scopes yet':'Loading workspace…'}</span>}
-    <small>{scope?`${scope.broker_id} · ${scope.account_ids.length} accounts`:'Create a scope to get started'}</small>
-   </div></div>
+   <div className="workspace-heading"><div><h1>{view==='history'?'Run history':'Reconcile your trades'}</h1><p>{view==='history'?'Review previous runs, comparisons, and reports.':'Prepare the day’s scope. Reconcile files. Investigate the differences.'}</p></div></div>
    {error&&<div className="alert error" role="alert"><TriangleAlert size={17}/><span>{error}</span><button className="icon-btn push" aria-label="Dismiss error" onClick={()=>setError('')}><X size={16}/></button></div>}
    {notice&&<div className="toast" role="status"><Check size={16}/>{notice}</div>}
    <section className="scope-actions" aria-label="Daily reconciliation setup"><div><h2>{scope?'Ready for the next reconciliation?':'Set up your first reconciliation'}</h2><p>Create a scope for the day, then upload a pair of files to start a run.</p></div><div className="scope-action-buttons"><button className="btn secondary" onClick={()=>setScopeOpen(true)}><Plus size={15}/>Create scope</button><button className="btn primary" onClick={()=>setReconOpen(true)}><Play size={15}/>New reconciliation</button></div></section>
+   <div className="scope-context" role="group" aria-label="Scope selection">
+    <label htmlFor="workspace-scope">Scope</label>
+    {scopes.length>0?<select id="workspace-scope" aria-label="Reconciliation scope" value={sid} onChange={e=>selectScope(e.target.value)}>{scopes.map(s=><option key={s.id} value={s.id}>{scopeLabel(s)}</option>)}</select>:<span>{connected?'No scopes yet':'Loading workspace…'}</span>}
+    <small>{scope?`${scope.broker_id} · ${scope.account_ids.length} accounts`:'Create a scope to get started'}</small>
+   </div>
    <div className="reconciliation-view" hidden={view!=='reconciliation'}>
    <WorkflowStatus workflow={latestWorkflow} onInspect={id=>act(async()=>inspectBatch(await api(`/batches/${id}`)))}/>
 

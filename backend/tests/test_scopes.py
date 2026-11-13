@@ -10,6 +10,7 @@ from test_integration import client, wait_for
 
 @pytest.fixture
 def scope_data():
+    # Isolate requests with a unique broker and exercise accounts beyond the seeded demo pair.
     data = {'broker_id': 'scope-test-'+uid(), 'broker_name': 'Scope setup test',
             'business_date': '2026-11-13', 'dataset_id': 'equities',
             'account_ids': ['CLIENT02', 'CLIENT01'],
@@ -22,10 +23,12 @@ def scope_data():
 
 
 def create(client, data, key=None):
+    # Match the frontend's JSON scope request, including its retry-protection header.
     return client.post('/scopes', json=data, headers={'Idempotency-Key': key or uid()})
 
 
 def test_scope_creation_registers_deliveries_and_supports_filters(client, scope_data):
+    # New scopes atomically register expected arrivals and are discoverable through list filters.
     response = create(client, scope_data)
     assert response.status_code == 201, response.text
     scope = response.json()
@@ -45,6 +48,7 @@ def test_scope_creation_registers_deliveries_and_supports_filters(client, scope_
 
 
 def test_retries_reuse_scope_and_conflicting_details_are_rejected(client, scope_data):
+    # Same-key retries and equivalent new-key requests reuse the scope; changed setup conflicts.
     key = uid()
     first = create(client, scope_data, key)
     assert first.status_code == 201, first.text
@@ -60,6 +64,7 @@ def test_retries_reuse_scope_and_conflicting_details_are_rejected(client, scope_
 
 
 def test_concurrent_scope_creation_and_next_business_date(client, scope_data):
+    # Concurrent callers share one scope; the next business date gets a separate identity.
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda _: create(client, scope_data), range(4)))
     assert sorted(r.status_code for r in results) == [200, 200, 200, 201]
@@ -76,11 +81,13 @@ def test_concurrent_scope_creation_and_next_business_date(client, scope_data):
     {'internal_deadline': '2026-11-13T22:00:00'},
 ])
 def test_invalid_scope_details_do_not_create_scope(client, scope_data, change):
+    # Invalid identifiers, account coverage, dates, or timezone-free deadlines leave no scope.
     assert create(client, {**scope_data, **change}).status_code == 422
     assert client.get('/scopes', params={'broker_id': scope_data['broker_id']}).json() == []
 
 
 def test_new_scope_with_configured_accounts_can_finish_reconciliation(client, scope_data):
+    # Verify that newly configured accounts propagate through manifests and row validation.
     created = create(client, scope_data)
     assert created.status_code == 201, created.text
     sid = created.json()['id']
@@ -92,6 +99,7 @@ def test_new_scope_with_configured_accounts_can_finish_reconciliation(client, sc
     response = client.post('/workflows', files=files, data={'scope_id': sid, 'complete': 'true'},
                            headers={'Idempotency-Key': uid()})
     assert response.status_code == 202, response.text
+    # Follow the actual workers through validation, run creation, and result publication.
     workflow = wait_for(lambda: client.get('/workflows/'+response.json()['id']).json(),
                         lambda w: w['status'] in ['SUCCEEDED', 'BLOCKED', 'FAILED'])
     assert workflow['status'] == 'SUCCEEDED', workflow

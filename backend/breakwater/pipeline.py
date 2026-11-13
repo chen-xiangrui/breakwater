@@ -13,17 +13,24 @@ from breakwater.db import query, one, many, uid, dumps
 from breakwater.domain import INTERNAL, BROKER, normalize, stable_digest, fingerprint, compare, evidence_fingerprint, safe_csv
 from breakwater.service import new_work, event
 
+# Limit how many source rows are buffered before writing a chunk file.
 CHUNK_SIZE=int(os.getenv('CHUNK_SIZE','5000'))
 csv.field_size_limit(65536)
 
 
+# Tell the worker that retrying cannot fix this input or validation failure.
 class PermanentError(Exception):
     pass
 
 
+# Handlers receive a database connection (c) and a work-table row (w).
+# jobs.execute() commits their database changes together with task completion.
+# Read one uploaded CSV and split it into chunks for row validation.
 def parse(c,w):
+    # Load the uploaded file's metadata and declared contents from batches.
     batch=one(c,'SELECT * FROM batches WHERE id=:id',id=w['batch_id'])
     manifest=batch['manifest']
+    # Open the stored file and verify that its bytes still match the checksum.
     with storage.path(batch['object_key']).open('rb') as f:
         if hashlib.file_digest(f,'sha256').hexdigest()!=batch['sha256']:
             raise PermanentError('Stored file checksum no longer matches the registered bytes')
@@ -32,11 +39,13 @@ def parse(c,w):
         nonlocal rows,chunk_no
         if not rows:
             return
+        # Save buffered rows as a JSON chunk and create its work/outbox entries.
         key=storage.store_bytes(dumps(rows).encode())
         new_work(c,'chunk',batch_id=batch['id'],ordinal=chunk_no,payload={'object_key':key,'count':len(rows)})
         rows=[]
         chunk_no+=1
     try:
+        # Read UTF-8 CSV, allowing a BOM, and require the source's exact headers.
         with storage.path(batch['object_key']).open(encoding='utf-8-sig',newline='') as f:
             reader=csv.reader(f,strict=True)
             headers=next(reader,None)
@@ -44,49 +53,64 @@ def parse(c,w):
             if headers!=expected:
                 raise PermanentError('CSV header must exactly match '+','.join(expected))
             for number,values in enumerate(reader,1):
+                # Stop files or records that exceed the supported ingestion limits.
                 if number>1000000:
                     raise PermanentError('The demo limit is 1,000,000 records per input')
                 if sum(len(v) for v in values)>65536:
                     raise PermanentError(f'Record {number} exceeds 64 KiB')
+                # Preserve source values and flag column-count errors for chunk validation.
                 raw=dict(zip(headers,values))
                 if len(values)>len(headers):
                     raw['_extra_columns']=values[len(headers):]
                 rows.append({'number':number,'raw':raw, 'structural_error':len(values)!=len(headers)})
                 if len(rows)>=CHUNK_SIZE:
                     flush()
+            # Save any remaining rows that did not fill a complete chunk.
             flush()
     except (UnicodeDecodeError,csv.Error) as e:
+        # Invalid encoding or malformed CSV blocks the file as a permanent failure.
         raise PermanentError(f'Structural CSV error: {e}') from e
+    # Compare the parsed row count with the manifest and record the batch's status.
     checks={**batch['checks'],'row_count':number==manifest['expected_data_rows']}
     status='VALIDATING' if checks['row_count'] else 'BLOCKED'
     error=None if checks['row_count'] else f'Manifest declares {manifest["expected_data_rows"]} rows; parsed {number}'
     query(c,'UPDATE batches SET parsed=:n,status=:status,checks=CAST(:checks AS jsonb),error=:error WHERE id=:id',
           n=number,status=status,checks=dumps(checks),error=error,id=batch['id'])
     if status=='BLOCKED':
+        # Prevent chunk processing when the file's declared row count is incorrect.
         query(c,"UPDATE work SET state='CANCELLED' WHERE batch_id=:id AND kind='chunk'",id=batch['id'])
     if not number and status!='BLOCKED':
+        # A valid empty file has no chunks, so schedule its final readiness check now.
         new_work(c,'batch_finalize',batch_id=batch['id'])
     return {'parsed':number,'chunks':chunk_no}
 
 
+# Validate one chunk and store its accepted records or rejection details.
 def chunk(c,w):
+    # Load the batch and skip work if ingestion has already been blocked or failed.
     batch=one(c,'SELECT * FROM batches WHERE id=:id',id=w['batch_id'])
     if batch['status'] in ['BLOCKED','FAILED']:
         return {'skipped':True}
+    # Read this task's JSON chunk from file storage.
     rows=json.loads(storage.path(w['payload']['object_key']).read_text())
     accepted,rejected=0,0
     for row in rows:
+        # Map source fields to common names and validate values and account coverage.
         normalized,errors=normalize(row['raw'],batch['side'],batch['manifest']['account_ids'])
         if row['structural_error']:
+            # Include the column-count error flagged when the original CSV was parsed (from parse()).
             errors.append({'field':'record','code':'COLUMN_COUNT','message':'Row has a different number of fields than the header'})
         if errors:
+            # Keep invalid source rows and their error reasons in rejections.
             rejected+=1
             query(c,"""INSERT INTO rejections(batch_id,record_number,raw,errors)
                 VALUES(:batch,:number,CAST(:raw AS jsonb),CAST(:errors AS jsonb))""",
                 batch=batch['id'],number=row['number'],raw=dumps(row['raw']),errors=dumps(errors))
         else:
+            # Use the declared business date as the accepted record's reconciliation date.
             accepted+=1
             normalized['business_date']=batch['manifest']['business_date']
+            # Save raw/normalized evidence, the stable bucket key, and a content hash.
             query(c,"""INSERT INTO records(batch_id,record_number,reconciliation_ref,key_digest,account,instrument,side,currency,quantity,price,normalized,raw,payload_hash)
               VALUES(:batch,:number,:ref,:digest,:account,:instrument,:side,:currency,:quantity,:price,CAST(:normalized AS jsonb),CAST(:raw AS jsonb),:hash)""",
               batch=batch['id'],number=row['number'],ref=normalized['reconciliation_ref'],digest=stable_digest(batch['scope_id'],normalized['reconciliation_ref']),
@@ -95,48 +119,63 @@ def chunk(c,w):
     return {'accepted':accepted,'rejected':rejected}
 
 
+# Publish a batch's final row counts and decide whether the file is ready to use.
 def batch_finalize(c,w):
+    # Lock the batch while deciding readiness; leave completed or blocked batches alone.
     batch=one(c,'SELECT * FROM batches WHERE id=:id FOR UPDATE',id=w['batch_id'])
     if batch['status'] in ['BLOCKED','FAILED','READY']:
         return {}
+    # Require every chunk task to have committed successfully before counting rows.
     pending=query(c,"SELECT count(*) FROM work WHERE batch_id=:id AND kind='chunk' AND state<>'SUCCEEDED'",id=batch['id']).scalar()
     if pending:
         raise RuntimeError('Chunks are not complete')
+    # Check that accepted and rejected row totals match the batch's parsed row count.
     accepted=query(c,'SELECT count(*) FROM records WHERE batch_id=:id',id=batch['id']).scalar()
     rejected=query(c,'SELECT count(*) FROM rejections WHERE batch_id=:id',id=batch['id']).scalar()
     if accepted+rejected!=batch['parsed']:
         raise PermanentError('Ingestion counts do not balance')
+    # Publish final counts; any rejected row blocks the batch, otherwise it becomes READY.
     query(c,"""UPDATE batches SET accepted=:accepted,rejected=:rejected,status=:status,error=:error,
         ready_at=CASE WHEN :rejected=0 THEN now() ELSE NULL END WHERE id=:id""",id=batch['id'],accepted=accepted,rejected=rejected,
         status='BLOCKED' if rejected else 'READY',error=f'{rejected} rejected records need correction' if rejected else None)
     return {'accepted':accepted,'rejected':rejected}
 
 
+# Assign the selected inputs to buckets and schedule their comparison tasks.
 def prepare(c,w):
+    # Load the run and stop if an earlier task has already failed it.
     run=one(c,'SELECT * FROM runs WHERE id=:id',id=w['run_id'])
     if run['status']=='FAILED':
         return {}
+    # Mark processing as started while preserving the original start time on retries.
     query(c,"UPDATE runs SET status='RUNNING',started_at=COALESCE(started_at,now()) WHERE id=:id",id=run['id'])
+    # Put matching references from both selected batches into the same stable bucket.
     query(c,"""INSERT INTO assignments(run_id,record_id,bucket)
         SELECT :run,id,key_digest % :buckets FROM records WHERE batch_id IN (:internal,:broker)""",
         run=run['id'],buckets=run['bucket_count'],internal=run['internal_batch_id'],broker=run['broker_batch_id'])
+    # Schedule one comparison task per bucket through work and outbox.
     for bucket in range(run['bucket_count']):
         wid=new_work(c,'partition',run_id=run['id'],ordinal=bucket)
+        # Apply optional demo controls to pause a bucket or fail its first attempt.
         query(c,'UPDATE work SET pause=:pause,fail_remaining=:fail WHERE id=:id',id=wid,
               pause=w['payload'].get('pause_bucket')==bucket,fail=1 if w['payload'].get('fail_bucket')==bucket else 0)
     return {'partitions':run['bucket_count']}
 
 
+# Compare internal and broker records within one bucket of a reconciliation run.
 def partition(c,w):
+    # Load the run and its pinned comparison rules; skip runs that have already failed.
     run=one(c,'SELECT * FROM runs WHERE id=:id',id=w['run_id'])
     if run['status']=='FAILED':
         return {'skipped':True}
     rules=one(c,'SELECT config FROM rule_sets WHERE id=:id',id=run['rule_version'])['config']
+    # Bound ambiguous comparisons by rejecting references with over 100 participating rows.
     large=one(c,"""SELECT r.reconciliation_ref,count(*) AS n FROM records r JOIN assignments a ON a.record_id=r.id
         WHERE a.run_id=:run AND a.bucket=:bucket GROUP BY r.reconciliation_ref HAVING count(*)>100 LIMIT 1""",run=run['id'],bucket=w['ordinal'])
     if large:
         raise PermanentError(f'Key {large["reconciliation_ref"]} exceeds the 100-row ambiguity limit')
-    # Aggregate each side before FULL OUTER JOIN: duplicate keys can never multiply joined rows.
+    # Group records by reference and source side, preserving duplicates as evidence.
+    # FULL OUTER JOIN also includes references present on only one side.
     sql="""WITH grouped AS (
       SELECT r.reconciliation_ref,b.side,jsonb_agg(jsonb_build_object('id',r.id,'record_number',r.record_number,
         'batch_id',b.id,'filename',b.filename,'revision',b.revision,'sha256',b.sha256,'raw',r.raw,'normalized',r.normalized)
@@ -149,38 +188,48 @@ def partition(c,w):
     FROM i FULL OUTER JOIN b ON i.reconciliation_ref=b.reconciliation_ref
     ORDER BY coalesce(i.reconciliation_ref,b.reconciliation_ref)"""
     from sqlalchemy import text
+    # Stream this bucket's comparison groups without loading the full result into memory.
     rows=c.execution_options(stream_results=True).execute(text(sql),{'run':run['id'],'bucket':w['ordinal']}).mappings()
     counts={'groups':0,'records':0,'findings':0}
-    # Use a separate Connection wrapper with streaming disabled for INSERT statements.
+    # Disable streaming for subsequent INSERT statements while consuming the read cursor.
     c.execution_options(stream_results=False)
     for row in rows:
+        # Classify this reference as matched, mismatched, missing, or duplicated.
         outcome,families,evidence=compare(row['internal'],row['broker'],rules)
         gid=uid()
+        # Save every comparison result with the producing task's attempt token.
         query(c,"""INSERT INTO comparison_groups(id,run_id,work_id,winning_token,reconciliation_ref,outcome,internal_count,broker_count,evidence)
           VALUES(:id,:run,:work,:token,:ref,:outcome,:ic,:bc,CAST(:evidence AS jsonb))""",
           id=gid,run=run['id'],work=w['id'],token=w['token'],ref=row['ref'],outcome=outcome,
           ic=len(row['internal']),bc=len(row['broker']),evidence=dumps(evidence))
+        # Save each detected issue family and its evidence fingerprint for case tracking.
         for family in families:
             query(c,"""INSERT INTO findings(id,group_id,run_id,reconciliation_ref,family,evidence,fingerprint)
               VALUES(:id,:gid,:run,:ref,:family,CAST(:evidence AS jsonb),:fp)""",id=uid(),gid=gid,run=run['id'],ref=row['ref'],family=family,
               evidence=dumps(evidence),fp=evidence_fingerprint(family,evidence))
+        # Accumulate counts for this partition's task metrics.
         counts['groups']+=1
         counts['records']+=len(row['internal'])+len(row['broker'])
         counts['findings']+=len(families)
     return counts
 
 
+# Validate the completed run and publish its cases, metrics, and scope status.
 def finalize(c,w):
     started=time.monotonic()
+    # Lock the scope so runs cannot publish conflicting case updates at the same time.
     run=one(c,'SELECT * FROM runs WHERE id=:id',id=w['run_id'])
     scope=one(c,'SELECT * FROM scopes WHERE id=:id FOR UPDATE',id=run['scope_id'])
     if run['status'] in ['SUCCEEDED','SUPERSEDED','FAILED']:
         return {}
+    # Require the complete set of successful partition tasks before publication.
     partitions=many(c,"SELECT * FROM work WHERE run_id=:id AND kind='partition' ORDER BY ordinal",id=run['id'])
     if len(partitions)!=run['bucket_count'] or any(p['state']!='SUCCEEDED' for p in partitions):
         raise PermanentError('Cannot publish an incomplete partition set')
+    # Verify that results belong to each partition's current successful worker attempt.
     invalid=query(c,"""SELECT count(*) FROM comparison_groups g JOIN work w ON w.id=g.work_id
       WHERE g.run_id=:run AND (g.winning_token<>w.token OR w.state<>'SUCCEEDED')""",run=run['id']).scalar()
+    # Build outcome totals and check that comparisons cover all accepted input records.
     counts=many(c,'SELECT outcome,count(*) AS count FROM comparison_groups WHERE run_id=:id GROUP BY outcome',id=run['id'])
     metrics={r['outcome'].lower():r['count'] for r in counts}
     metrics['groups']=sum(metrics.values())
@@ -189,63 +238,79 @@ def finalize(c,w):
     expected=query(c,'SELECT sum(accepted) FROM batches WHERE id IN (:i,:b)',i=run['internal_batch_id'],b=run['broker_batch_id']).scalar()
     if invalid or metrics['records']!=expected:
         raise PermanentError('Result coverage or winning-attempt validation failed')
+    # Preserve a newer published run if this older run finishes after it.
     newer=one(c,'SELECT sequence FROM runs WHERE id=:id',id=scope['published_run_id']) if scope['published_run_id'] else None
     if newer and newer['sequence']>run['sequence']:
         query(c,"UPDATE runs SET status='SUPERSEDED',metrics=CAST(:m AS jsonb),completed_at=clock_timestamp() WHERE id=:id",m=dumps(metrics),id=run['id'])
         return metrics
-    # Bounded publication: explicitly reject pathological case volume before mutating projections.
+    # Lock existing cases and limit publication size before changing any case state.
     existing=many(c,'SELECT * FROM cases WHERE scope_id=:id ORDER BY reconciliation_ref,family FOR UPDATE',id=scope['id'])
     if metrics['findings']+len(existing)>20000:
         raise PermanentError('Publication exceeds 20,000 case observations; reduce scope size')
+    # Match findings to stable case identities: reconciliation reference plus issue family.
     current={(x['reconciliation_ref'],x['family']):x for x in existing}
     findings=many(c,'SELECT * FROM findings WHERE run_id=:id ORDER BY reconciliation_ref,family',id=run['id'])
     present=set()
+    # Create or refresh cases for discrepancies detected in this run.
     for f in findings:
         key=(f['reconciliation_ref'],f['family'])
         present.add(key)
         case=current.get(key)
         if case:
+            # Keep a waiver only while its evidence is unchanged and it has not expired.
             workflow=case['workflow']
             waiver_valid=(case['waiver_fingerprint']==f['fingerprint'] and case['waiver_expires_at'] and case['waiver_expires_at']>datetime.now(timezone.utc))
+            # Reopen returning issues and send invalidated waivers back for review.
             if workflow=='RESOLVED':
                 workflow='OPEN'
             if workflow=='WAIVED' and not waiver_valid:
                 workflow='IN_REVIEW'
             cid,version=case['id'],case['version']+1
+            # Update the current case evidence and increment its concurrency-control version.
             query(c,"""UPDATE cases SET detection='PRESENT',workflow=:workflow,last_run_id=:run,evidence=CAST(:e AS jsonb),
                 fingerprint=:fp,version=:version,updated_at=now() WHERE id=:id""",workflow=workflow,run=run['id'],
                 e=dumps(f['evidence']),fp=f['fingerprint'],version=version,id=cid)
         else:
+            # Open a new case when this reference and issue family have no history.
             cid,version=uid(),1
             query(c,"""INSERT INTO cases(id,scope_id,reconciliation_ref,family,first_run_id,last_run_id,evidence,fingerprint)
               VALUES(:id,:scope,:ref,:family,:run,:run,CAST(:e AS jsonb),:fp)""",id=cid,scope=scope['id'],ref=f['reconciliation_ref'],
               family=f['family'],run=run['id'],e=dumps(f['evidence']),fp=f['fingerprint'])
+        # Keep this run's observation and an audit event alongside the current case state.
         query(c,"INSERT INTO observations(run_id,case_id,detection,evidence) VALUES(:run,:cid,'PRESENT',CAST(:e AS jsonb))",run=run['id'],cid=cid,e=dumps(f['evidence']))
         event(c,cid,'System','OBSERVED',f'Run #{run["sequence"]}: discrepancy {"persists" if case else "detected"}',version-1 if case else None,version,f'{run["id"]}:{cid}')
+    # Reassess previous cases whose issue family was not detected in this run.
     for key,case in current.items():
         if key in present:
             continue
+        # Check whether the reference now matches, is absent, or has another discrepancy.
         group=one(c,'SELECT outcome FROM comparison_groups WHERE run_id=:run AND reconciliation_ref=:ref',run=run['id'],ref=case['reconciliation_ref'])
         detection='NOT_PRESENT_IN_INPUTS' if not group else ('CLEARED' if group['outcome']=='MATCHED' else 'UNASSESSABLE')
         # A different discrepancy cannot prove that the previous issue has cleared.
         workflow='RESOLVED' if detection=='CLEARED' else 'IN_REVIEW'
         query(c,"UPDATE cases SET detection=:d,workflow=:w,last_run_id=:run,version=version+1,updated_at=now() WHERE id=:id",
               d=detection,w=workflow,run=run['id'],id=case['id'])
+        # Retain the previous evidence and record why the case cleared or needs review.
         query(c,'INSERT INTO observations(run_id,case_id,detection,evidence) VALUES(:run,:cid,:d,CAST(:e AS jsonb))',
               run=run['id'],cid=case['id'],d=detection,e=dumps({'group_outcome':group['outcome'] if group else None,'previous_evidence':case['evidence']}))
         reason={'CLEARED':'key now matches; issue cleared','NOT_PRESENT_IN_INPUTS':'key absent from both inputs; review required','UNASSESSABLE':'key has a different discrepancy; previous issue requires review'}[detection]
         event(c,case['id'],'System',detection,f'Run #{run["sequence"]}: {reason}',case['version'],case['version']+1,f'{run["id"]}:{case["id"]}')
+    # Publish the run outcome and scope pointer in the same transaction as the case updates.
     metrics['publication_ms']=round((time.monotonic()-started)*1000,2)
     query(c,"""UPDATE runs SET status='SUCCEEDED',outcome=:outcome,metrics=CAST(:metrics AS jsonb),completed_at=clock_timestamp() WHERE id=:id""",
           outcome='BREAKS_FOUND' if metrics['findings'] else 'MATCHED',metrics=dumps(metrics),id=run['id'])
     query(c,'UPDATE scopes SET published_run_id=:run WHERE id=:id',run=run['id'],id=scope['id'])
+    # Generate the downloadable report separately after successful publication.
     new_work(c,'report',run_id=run['id'])
     return metrics
 
 
+# Build and store a downloadable CSV report for a published run.
 def report(c,w):
+    # Load the completed run and the identities of its pinned input revisions.
     run=one(c,'SELECT * FROM runs WHERE id=:id',id=w['run_id'])
     batches=many(c,'SELECT side,sha256,revision FROM batches WHERE id IN (:i,:b)',i=run['internal_batch_id'],b=run['broker_batch_id'])
+    # Build the CSV in a temporary file, starting with run metadata and source checksums.
     with tempfile.TemporaryFile(mode='w+',encoding='utf-8',newline='') as f:
         writer=csv.writer(f)
         writer.writerow(['Breakwater reconciliation report',run['id'],run['rule_version'],dumps(run['metrics'])])
@@ -253,21 +318,26 @@ def report(c,w):
             writer.writerow([b['side'],'revision',b['revision'],'SHA-256',b['sha256']])
         writer.writerow(['reference','outcome','internal_records','broker_records','differences','input_lineage'])
         from sqlalchemy import text
+        # Stream comparison results in reference order to keep report memory use bounded.
         rows=c.execution_options(stream_results=True).execute(text('SELECT * FROM comparison_groups WHERE run_id=:id ORDER BY reconciliation_ref'),{'id':run['id']}).mappings()
         for g in rows:
+            # Include source lineage and escape CSV cells that could be treated as formulas.
             e=g['evidence']
             lineage=[{k:r[k] for k in ['batch_id','record_number','revision','sha256']} for s in ['internal','broker'] for r in e[s]]
             writer.writerow([safe_csv(x) for x in [g['reconciliation_ref'],g['outcome'],g['internal_count'],g['broker_count'],dumps(e['differences']),dumps(lineage)]])
+        # Restore normal execution and rewind the completed CSV before storing it.
         c.execution_options(stream_results=False)
         f.seek(0)
-        # Copy in bounded buffers through the content-addressed store.
+        # Copy the CSV in small buffers into storage, using its checksum as the file key.
         with tempfile.TemporaryFile() as data:
             while part:=f.read(65536):
                 data.write(part.encode())
             data.seek(0)
             key,size=storage.store_stream(data,limit=storage.MAX_ARTIFACT)
+    # Expose the stored CSV through the run's report status, storage key, and checksum.
     query(c,"UPDATE runs SET report_status='READY',report_key=:key,report_sha256=:key WHERE id=:id",key=key,id=run['id'])
     return {'bytes':size}
 
 
+# jobs.execute() uses the work row's kind to select the pipeline function to run.
 HANDLERS={'parse':parse,'chunk':chunk,'batch_finalize':batch_finalize,'prepare':prepare,'partition':partition,'finalize':finalize,'report':report}

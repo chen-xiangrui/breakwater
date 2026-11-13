@@ -1,7 +1,9 @@
+# Build/install the Python package with the pinned setuptools backend.
 [build-system]
 requires = ["setuptools==80.9.0"]
 build-backend = "setuptools.build_meta"
 
+# Runtime metadata and directly declared API, database, worker, and test dependencies.
 [project]
 name = "breakwater"
 version = "0.1.0"
@@ -12,9 +14,11 @@ dependencies = [
   "celery==5.5.3", "pydantic==2.11.5", "httpx==0.28.1", "pytest==8.3.5",
 ]
 
+# Include application modules when building the distributable package.
 [tool.setuptools.packages.find]
 include = ["breakwater*"]
 
+# Discover backend tests here; integration tests expect the live Compose services.
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

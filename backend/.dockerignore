@@ -1,3 +1,4 @@
+# Exclude local Python caches and virtual environments from the container build context.
 __pycache__
 .pytest_cache
 .venv

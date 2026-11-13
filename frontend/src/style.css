@@ -16,8 +16,10 @@
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 
 /* Daily scope setup and reconciliation dialogs. */
-.workspace-heading .context{max-width:48%;min-width:0;flex-shrink:1}
-.workspace-heading .context select{width:100%;text-overflow:ellipsis}
+.scope-context{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;min-width:0;margin-bottom:22px;font-size:11px;color:#7c8b6d}
+.scope-context label{font-weight:550;color:#526b54}
+.scope-context select{width:min(100%,480px);max-width:100%;min-width:0;padding:8px;font-size:11px;text-overflow:ellipsis;background:none}
+.scope-context small{font-size:10px;color:#9aaa8b}
 .scope-actions{display:flex;align-items:center;justify-content:space-between;gap:22px;padding:20px 22px;margin-bottom:22px;border:1px solid #dce6d8;border-radius:9px;background:#f0f5eb}
 .scope-actions h2{font-size:14px;color:#365c46}
 .scope-actions p{margin-top:7px;font-size:11px;line-height:1.7;color:#73846a}
@@ -45,11 +47,12 @@
 .scope-form>.alert{margin-top:17px}
 .inline-scope{border:1px solid #dfe8d6;border-radius:7px;background:#fcfdf9;padding:18px}
 .inline-scope>p{font-size:11px;color:#819174;line-height:1.7;margin:7px 0 20px}
-@media(max-width:1000px){.scope-actions{align-items:flex-start;flex-direction:column;gap:15px}.scope-action-buttons{flex-wrap:wrap}.workspace-heading .context{max-width:45%}}
+@media(max-width:1000px){.scope-actions{align-items:flex-start;flex-direction:column;gap:15px}.scope-action-buttons{flex-wrap:wrap}}
 @media(max-width:560px){
   .workspace-heading{align-items:flex-start;flex-direction:column;gap:15px}
-  .workspace-heading .context{max-width:100%;width:100%;text-align:left}
-  .workspace-heading .context select{font-size:10px}
+  .scope-context{margin-bottom:17px}
+  .scope-context label{width:100%}
+  .scope-context select{width:100%;font-size:10px}
   .scope-actions{padding:17px;margin-bottom:17px}.scope-actions h2{font-size:13px}.scope-actions p{font-size:10px}
   .scope-action-buttons{width:100%;display:grid;grid-template-columns:1fr 1fr;gap:7px}
   .scope-action-buttons .btn{font-size:10px;padding:9px 8px}

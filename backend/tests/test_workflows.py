@@ -1,3 +1,4 @@
+# Live API tests for paired uploads, automatic run creation, and invalid input handling.
 import time
 import pytest
 
@@ -7,6 +8,7 @@ from test_integration import client,scope,wait_for
 
 
 def submit(client,scope,scenario='breaks',key=None,complete=True,count=60):
+    # Send synthetic internal/broker files through the same multipart endpoint as the UI.
     internal=fixture('INTERNAL',scenario,count,dataset=scope)[0]
     broker=fixture('BROKER',scenario,count,dataset=scope)[0]
     return client.post('/workflows',files={'internal_file':('internal.csv',internal,'text/csv'),
@@ -16,6 +18,7 @@ def submit(client,scope,scenario='breaks',key=None,complete=True,count=60):
 
 @pytest.mark.parametrize('count',[60,10000])
 def test_manual_pair_validates_then_starts_one_pinned_run(client,scope,count):
+    # Check retries/conflicts before waiting for ingestion and the single automatically created run.
     key=uid()
     response=submit(client,scope,key=key,count=count)
     assert response.status_code==202,response.text
@@ -29,6 +32,7 @@ def test_manual_pair_validates_then_starts_one_pinned_run(client,scope,count):
     r=client.get('/runs/'+result['run_id']).json()
     assert r['metrics']['matched']==count-15 and r['metrics']['findings']==16
     assert r['internal_batch_id']==workflow['internal_batch_id'] and r['broker_batch_id']==workflow['broker_batch_id']
+    # Generated manifests retain calculated controls and the uploader's completeness declaration.
     for b in r['inputs']:
         assert b['manifest_origin']=='OPERATOR'
         assert b['manifest']['expected_data_rows']==count+1
@@ -41,6 +45,7 @@ def test_manual_pair_validates_then_starts_one_pinned_run(client,scope,count):
 
 
 def test_rejected_manual_input_blocks_workflow_without_creating_run(client,scope):
+    # A rejected broker row prevents run creation and leaves the case projection untouched.
     response=submit(client,scope,scenario='rejected')
     assert response.status_code==202,response.text
     workflow=response.json()
@@ -52,6 +57,7 @@ def test_rejected_manual_input_blocks_workflow_without_creating_run(client,scope
 
 
 def test_manual_upload_requires_both_inputs_and_completeness_declaration(client,scope):
+    # Missing files, absent completeness confirmation, or swapped source headers fail registration.
     assert submit(client,scope,complete=False).status_code==422
     only_internal=client.post('/workflows',files={'internal_file':('internal.csv',fixture('INTERNAL')[0])},
         data={'scope_id':scope,'complete':'true'},headers={'Idempotency-Key':uid()})
@@ -64,6 +70,7 @@ def test_manual_upload_requires_both_inputs_and_completeness_declaration(client,
 
 
 def test_manual_complete_empty_broker_is_valid(client,scope):
+    # A declared empty snapshot is a valid input and produces missing-broker comparisons.
     response=submit(client,scope,scenario='empty')
     assert response.status_code==202,response.text
     result=wait_for(lambda:client.get('/workflows/'+response.json()['id']).json(),lambda w:w['status']=='SUCCEEDED')

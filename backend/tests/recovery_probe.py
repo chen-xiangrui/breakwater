@@ -7,9 +7,11 @@ import httpx
 from breakwater.db import transaction,query,one,many,uid
 from test_integration import upload,ready,run_pair,finished,wait_for
 
+# Share the paused task/token between the host script's prepare and verification phases.
 state=Path('/tmp/breakwater-recovery.json')
 with httpx.Client(base_url='http://api:8000/api',timeout=15) as client:
     if sys.argv[1]=='prepare':
+        # Create isolated inputs and pause a RUNNING bucket before the host kills its worker.
         sid=uid()
         with transaction() as c:
             query(c,"""INSERT INTO scopes(id,broker_id,broker_name,business_date,dataset_id,account_ids,hidden)
@@ -19,9 +21,11 @@ with httpx.Client(base_url='http://api:8000/api',timeout=15) as client:
         r=run_pair(client,sid,ready(client,a),ready(client,b),buckets=8,pause_bucket=0)
         parts=wait_for(lambda:client.get(f'/runs/{r["id"]}/partitions').json()['items'],lambda ps:any(p['pause'] and p['state']=='RUNNING' for p in ps))
         p=next(p for p in parts if p['pause'])
+        # Persist identifiers so the verification phase can recognize the replacement attempt.
         state.write_text(json.dumps({'scope':sid,'run':r,'work':p['id'],'token':p['token']}))
         print(json.dumps({'run_id':r['id'],'paused_partition':p['id'],'initial_token':p['token']}))
     else:
+        # Wait for recovery to claim a newer token, release the pause, and finish the run.
         s=json.loads(state.read_text())
         parts=wait_for(lambda:client.get(f'/runs/{s["run"]["id"]}/partitions').json()['items'],lambda ps:any(p['id']==s['work'] and p['token']>s['token'] and p['state']=='RUNNING' for p in ps),seconds=90)
         client.post('/demo/work/'+s['work'],json={'action':'release'}).raise_for_status()
@@ -30,6 +34,7 @@ with httpx.Client(base_url='http://api:8000/api',timeout=15) as client:
         assert r['metrics']['groups']==1001
         assert r['metrics']['records']==2002
         with transaction() as c:
+            # Check that lease recovery left one logical result per reference and audit history.
             attempts=many(c,'SELECT token,state,error FROM attempts WHERE work_id=:id ORDER BY token',id=s['work'])
             assert any(a['state']=='EXPIRED' for a in attempts),attempts
             counts=one(c,'SELECT count(*) AS n,count(DISTINCT reconciliation_ref) AS unique_n FROM comparison_groups WHERE run_id=:id',id=r['id'])
