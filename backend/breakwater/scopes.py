@@ -25,12 +25,13 @@ class ScopeCreate(BaseModel):
     internal_deadline: AwareDatetime
     broker_deadline: AwareDatetime
 
+    # Reject duplicate account IDs and return them in sorted order.
     @field_validator('account_ids')
     @classmethod
     def unique_accounts(cls, accounts):
-        # Reject duplicate coverage entries and sort accounts for stable request fingerprints.
         if len(set(accounts)) != len(accounts):
             raise ValueError('Account IDs must be unique')
+
         return sorted(accounts)
 
 
@@ -48,6 +49,7 @@ class ScopeResponse(BaseModel):
     metrics: dict | None = None
 
 
+# Create a scope and expected deliveries atomically, or reuse a matching scope.
 def create_scope(data: ScopeCreate, key: str):
     # Serialize validated input so a retried creation request can reuse its saved result.
     payload = data.model_dump(mode='json')
@@ -80,6 +82,8 @@ def create_scope(data: ScopeCreate, key: str):
             if (scope['hidden'] or scope['broker_name'] != data.broker_name
                     or sorted(scope['account_ids']) != data.account_ids or existing_deadlines != deadlines):
                 conflict('A scope already exists for this broker, business date, and dataset with different details. Select the existing scope.')
+
         # Reuse matching scopes, reject conflicting details, and remember this request key.
         save_key(c, key, fingerprint, scope['id'], 'scope')
+
         return scope, created
