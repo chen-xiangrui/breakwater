@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from breakwater import storage
 from breakwater.db import query, one, many, uid, dumps
-from breakwater.domain import INTERNAL, BROKER, normalize, stable_digest, fingerprint, compare, evidence_fingerprint, safe_csv
+from breakwater.domain import DEFAULT_RULES, INTERNAL, BROKER, normalize, stable_digest, fingerprint, compare, evidence_fingerprint, safe_csv
 from breakwater.service import new_work, event
 
 # Limit how many source rows are buffered before writing a chunk file.
@@ -196,7 +196,7 @@ def partition(c,w):
     if run['status']=='FAILED':
         return {'skipped':True}
 
-    rules=one(c,'SELECT config FROM rule_sets WHERE id=:id',id=run['rule_version'])['config']
+    rules=DEFAULT_RULES
 
     # Bound ambiguous comparisons by rejecting references with over 100 participating rows.
     large=one(c,"""SELECT r.reconciliation_ref,count(*) AS n FROM records r JOIN assignments a ON a.record_id=r.id

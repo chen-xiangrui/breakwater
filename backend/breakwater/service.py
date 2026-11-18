@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 from breakwater.db import transaction, query, one, many, uid, dumps
-from breakwater.domain import Manifest, fingerprint
+from breakwater.domain import DEFAULT_RULES, Manifest, fingerprint
 
 
 # Raise a JSON-safe HTTP 409 error with optional conflict details.
@@ -130,14 +130,15 @@ def start_run_in_transaction(c,payload,key):
     query(c,'SELECT pg_advisory_xact_lock(918274)')
     scope=require(one(c,'SELECT * FROM scopes WHERE id=:id FOR UPDATE',id=payload['scope_id']),'Scope')
     batches=[require(one(c,'SELECT * FROM batches WHERE id=:id',id=payload[field]),'Batch') for field in ['internal_batch_id','broker_batch_id']]
-    rules=require(one(c,'SELECT * FROM rule_sets WHERE id=:id',id=payload['rule_version']),'Rule set')
+    if payload['rule_version'] != 'execution-v1':
+        raise HTTPException(422, 'Only execution-v1 rules are supported')
 
     # Require READY inputs from the same scope with compatible normalization/rule versions.
     for b,side in zip(batches,['INTERNAL','BROKER']):
         if b['scope_id']!=scope['id'] or b['side']!=side or b['status']!='READY':
             conflict('Both selected inputs must be READY and belong to the same scope with the correct source sides')
 
-        if b['mapping_version']!=rules['config']['mapping_version']:
+        if b['mapping_version']!=DEFAULT_RULES['mapping_version']:
             conflict('Input mapping version is incompatible with the selected rule set')
 
     # Bound simultaneous active runs across all scopes to four.

@@ -1,4 +1,4 @@
-# Populate the initial demo workspace after database migrations have completed.
+# Populate the initial demo workspace after database initialization has completed.
 from breakwater.db import transaction, query
 
 
@@ -17,5 +17,5 @@ def seed():
 
 
 if __name__=='__main__':
-    # The Compose migrate service invokes this entry point after alembic upgrade head.
+    # The Compose init-db service invokes this entry point after schema initialization.
     seed()

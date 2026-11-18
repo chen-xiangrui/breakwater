@@ -16,7 +16,7 @@ docker compose up --build -d
 - **OpenAPI:** http://localhost:8000/docs
 - **RabbitMQ management:** http://localhost:15672 — `breakwater` / `breakwater`
 
-The migration service creates the schema and an empty Northstar Securities scope for **6 November 2026**, covering `ACC01` and `ACC02`. No market-data service or cloud credentials are required. First startup downloads container images and dependencies. Named volumes preserve the database and immutable objects across restarts.
+The init-db service creates the schema and an empty Northstar Securities scope for **6 November 2026**, covering `ACC01` and `ACC02`. No market-data service or cloud credentials are required. First startup downloads container images and dependencies. Named volumes preserve the database and immutable objects across restarts.
 
 In the **Reconciliation** workspace, choose an **Internal trades CSV** and a **Broker trades CSV**, confirm that they are complete snapshots, and press **Run workflow**. Validation, reconciliation, and publication then run automatically. No separate manifest is required for this manual path.
 
@@ -113,3 +113,5 @@ Stop services while keeping data:
 ```sh
 docker compose stop
 ```
+
+Database setup uses `backend/breakwater/schema.sql` through `python -m breakwater.init_db`, with no migration version history. Initialization creates the schema atomically on an empty database and leaves existing databases intact. Changes to the schema file apply to new databases; existing databases require explicit schema updates.

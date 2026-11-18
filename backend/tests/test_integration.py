@@ -224,7 +224,7 @@ def test_fenced_old_worker_rolls_back_staged_effects():
     wid,stale_effect,winning_effect=uid(),uid(),uid()
     def handler(c,w):
         # Distinct probe rows reveal whether a superseded attempt accidentally commits.
-        query(c,"INSERT INTO rule_sets(id,config) VALUES(:id,'{}')",id=stale_effect if w['token']==1 else winning_effect)
+        query(c,"INSERT INTO idempotency(key,fingerprint,resource_id,kind) VALUES(:id,'probe',:id,'fence_probe')",id=stale_effect if w['token']==1 else winning_effect)
         if w['token']==1:
             entered.set()
             assert release.wait(10)
@@ -245,8 +245,8 @@ def test_fenced_old_worker_rolls_back_staged_effects():
         jobs.HANDLERS.pop('fence_probe')
     assert not worker.is_alive()
     with transaction() as c:
-        assert one(c,'SELECT * FROM rule_sets WHERE id=:id',id=stale_effect) is None
-        assert one(c,'SELECT * FROM rule_sets WHERE id=:id',id=winning_effect) is not None
+        assert one(c,'SELECT * FROM idempotency WHERE key=:id',id=stale_effect) is None
+        assert one(c,'SELECT * FROM idempotency WHERE key=:id',id=winning_effect) is not None
         assert one(c,'SELECT * FROM work WHERE id=:id',id=wid)['state']=='SUCCEEDED'
 
 

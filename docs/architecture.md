@@ -46,11 +46,11 @@ Defaults: 2 worker processes; 12 queued/running work slots; 4 active runs across
 
 ## Reconciliation and publication
 
-Each run pins both READY batch IDs, immutable rule version, code version, bucket count, and hash version. SHA-256 over canonical JSON `[scope_id, reference]`, truncated to 60 nonnegative bits, determines partition assignment; modulo is applied per run. Assignments are separate from READY source rows.
+Each run pins both READY batch IDs, immutable rule version, code version, bucket count, and hash version. All runs use the execution-v1 DEFAULT_RULES defined in domain.py; there is no runtime rule table or selectable configuration. Comparison evidence retains the effective rules. SHA-256 over canonical JSON `[scope_id, reference]`, truncated to 60 nonnegative bits, determines partition assignment; modulo is applied per run. Assignments are separate from READY source rows.
 
 PostgreSQL groups both sources by business identity **before** a FULL OUTER JOIN. This ensures duplicate keys never create Cartesian pairings. The joined cursor streams groups to the domain comparator, which emits all duplicate families or performs exact categorical/quantity and inclusive decimal-price checks. All source members, raw strings, revisions, checksums, rules, and differences are retained. Python decimal context is explicitly widened for exact notional products. Cross-currency notional deltas are omitted.
 
-The finalizer validates partition winners and source-record coverage, locks the scope, and rejects an older publication if a newer sequence is authoritative. Cases, observations, audit events, run status, the scope pointer, and report work are committed atomically. A failed or superseded run never updates the case projection. Inserts into completed evidence and edits/deletes of findings, groups, assignments, rules, observations, and events are protected with database triggers.
+The finalizer validates partition winners and source-record coverage, locks the scope, and rejects an older publication if a newer sequence is authoritative. Cases, observations, audit events, run status, the scope pointer, and report work are committed atomically. A failed or superseded run never updates the case projection. Inserts into completed evidence and edits/deletes of findings, groups, assignments, observations, and events are protected with database triggers.
 
 ## Case semantics
 

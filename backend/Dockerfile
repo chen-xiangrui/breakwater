@@ -1,10 +1,10 @@
-# Share the same Python environment across the API, dispatcher, worker, and migrations.
+# Share the same Python environment across the API, dispatcher, worker, and schema initialization.
 FROM python:3.12-slim
 WORKDIR /app
 # Cache dependency installation separately from frequently edited application files.
 COPY requirements.lock pyproject.toml ./
 RUN pip install --no-cache-dir -r requirements.lock
-# Install the package without resolving dependencies again, then include tests/migrations.
+# Install the package without resolving dependencies again, then include tests and the schema.
 COPY breakwater ./breakwater
 RUN pip install --no-cache-dir --no-deps .
 COPY . .

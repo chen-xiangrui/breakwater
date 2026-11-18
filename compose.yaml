@@ -42,9 +42,9 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
-  migrate:
+  init-db:
     <<: *backend
-    command: [sh, -c, "alembic upgrade head && python -m breakwater.seed"]
+    command: [sh, -c, "python -m breakwater.init_db && python -m breakwater.seed"]
     restart: "no"
   api:
     <<: *backend
@@ -55,7 +55,7 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
-      migrate:
+      init-db:
         condition: service_completed_successfully
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
@@ -66,13 +66,13 @@ services:
     <<: *backend
     command: [celery, -A, breakwater.jobs.celery, worker, --loglevel=INFO, --concurrency=2, --hostname=worker@%h]
     depends_on:
-      migrate:
+      init-db:
         condition: service_completed_successfully
   dispatcher:
     <<: *backend
     command: [python, -m, breakwater.dispatcher]
     depends_on:
-      migrate:
+      init-db:
         condition: service_completed_successfully
   web:
     build: ./frontend

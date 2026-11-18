@@ -1,6 +1,5 @@
 # Exact direct and transitive dependency versions installed by the backend Docker build.
-# This includes the API server, PostgreSQL driver/migrations, Celery transport, and tests.
-alembic==1.16.1
+# This includes the API server, PostgreSQL driver/schema initialization, Celery transport, and tests.
 amqp==5.4.2
 annotated-types==0.8.0
 anyio==4.16.0
@@ -19,8 +18,6 @@ httpx==0.28.1
 idna==3.20
 iniconfig==2.3.1
 kombu==5.5.4
-Mako==1.4.3
-MarkupSafe==3.0.4
 packaging==26.3
 pluggy==1.7.0
 prompt_toolkit==3.0.53

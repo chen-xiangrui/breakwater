@@ -2,7 +2,7 @@
 CREATE TABLE scopes (
  id text PRIMARY KEY, broker_id text NOT NULL, broker_name text NOT NULL,
  business_date date NOT NULL, dataset_id text NOT NULL, account_ids jsonb NOT NULL,
- next_sequence integer NOT NULL DEFAULT 1, published_run_id text,
+ next_sequence integer NOT NULL DEFAULT 1, published_run_id text, hidden boolean NOT NULL DEFAULT false,
  UNIQUE(broker_id,business_date,dataset_id)
 );
 -- Expected source arrivals and deadlines are registered before files arrive.
@@ -15,6 +15,7 @@ CREATE TABLE batches (
  id text PRIMARY KEY, scope_id text NOT NULL REFERENCES scopes(id), side text NOT NULL,
  revision integer NOT NULL CHECK(revision>0), filename text NOT NULL, object_key text NOT NULL,
  sha256 text NOT NULL, byte_size bigint NOT NULL, manifest jsonb NOT NULL,
+ manifest_origin text NOT NULL DEFAULT 'PRODUCER' CHECK (manifest_origin IN ('PRODUCER','OPERATOR')),
  status text NOT NULL DEFAULT 'RECEIVED', generation integer NOT NULL DEFAULT 1,
  mapping_version text NOT NULL DEFAULT 'equities-v1', adapter_version text NOT NULL DEFAULT 'csv-v1',
  parsed integer NOT NULL DEFAULT 0, accepted integer NOT NULL DEFAULT 0, rejected integer NOT NULL DEFAULT 0,
@@ -38,16 +39,11 @@ CREATE TABLE rejections (
  record_number integer NOT NULL, raw jsonb NOT NULL, errors jsonb NOT NULL,
  UNIQUE(batch_id,record_number)
 );
--- Versioned rule configuration is pinned by each reconciliation run.
-CREATE TABLE rule_sets (
- id text PRIMARY KEY, config jsonb NOT NULL
-);
-INSERT INTO rule_sets VALUES ('execution-v1', '{"price_tolerance":"0.01","quantity_tolerance":"0","mapping_version":"equities-v1","mode":"EXECUTION","timestamp_comparison":false}');
 -- A run pins two input batches and rules, and tracks comparison and report progress.
 CREATE TABLE runs (
  id text PRIMARY KEY, scope_id text NOT NULL REFERENCES scopes(id), sequence integer NOT NULL,
  internal_batch_id text NOT NULL REFERENCES batches(id), broker_batch_id text NOT NULL REFERENCES batches(id),
- rule_version text NOT NULL REFERENCES rule_sets(id), code_version text NOT NULL DEFAULT '0.1.0',
+ rule_version text NOT NULL CHECK (rule_version='execution-v1'), code_version text NOT NULL DEFAULT '0.1.0',
  bucket_count integer NOT NULL, hash_version text NOT NULL DEFAULT 'sha256-60-v1',
  status text NOT NULL DEFAULT 'QUEUED', outcome text, metrics jsonb NOT NULL DEFAULT '{}',
  report_status text NOT NULL DEFAULT 'PENDING', report_key text, report_sha256 text,
@@ -156,12 +152,11 @@ BEGIN
  RETURN NEW;
 END $$;
 CREATE TRIGGER immutable_batch BEFORE UPDATE OR DELETE ON batches FOR EACH ROW EXECUTE FUNCTION protect_ready_batch();
--- Reuse this guard to prevent edits/deletes of audit evidence and comparison rules.
+-- Reuse this guard to prevent edits/deletes of audit evidence.
 CREATE FUNCTION append_only() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN RAISE EXCEPTION 'Audit evidence is append-only'; END $$;
 CREATE TRIGGER immutable_events BEFORE UPDATE OR DELETE ON case_events FOR EACH ROW EXECUTE FUNCTION append_only();
 CREATE TRIGGER immutable_observations BEFORE UPDATE OR DELETE ON observations FOR EACH ROW EXECUTE FUNCTION append_only();
-CREATE TRIGGER immutable_rules BEFORE UPDATE OR DELETE ON rule_sets FOR EACH ROW EXECUTE FUNCTION append_only();
 CREATE TRIGGER immutable_groups BEFORE UPDATE OR DELETE ON comparison_groups FOR EACH ROW EXECUTE FUNCTION append_only();
 CREATE TRIGGER immutable_findings BEFORE UPDATE OR DELETE ON findings FOR EACH ROW EXECUTE FUNCTION append_only();
 -- Preserve a run's selected inputs and prevent changes to published outcomes or metrics.
@@ -177,3 +172,30 @@ BEGIN
 END $$;
 CREATE TRIGGER immutable_run BEFORE UPDATE ON runs FOR EACH ROW EXECUTE FUNCTION protect_run_inputs();
 
+
+CREATE FUNCTION protect_published_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      PERFORM 1 FROM runs WHERE id=NEW.run_id AND status IN ('SUCCEEDED','SUPERSEDED') FOR SHARE;
+      IF FOUND THEN RAISE EXCEPTION 'Completed run evidence is immutable'; END IF;
+      RETURN NEW;
+    END $$;
+
+CREATE TRIGGER immutable_assignments BEFORE UPDATE OR DELETE ON assignments FOR EACH ROW EXECUTE FUNCTION append_only();
+
+CREATE TRIGGER immutable_rejections BEFORE INSERT OR UPDATE OR DELETE ON rejections FOR EACH ROW EXECUTE FUNCTION protect_records();
+
+CREATE TABLE workflows (
+        id text PRIMARY KEY,
+        scope_id text NOT NULL REFERENCES scopes(id),
+        internal_batch_id text NOT NULL REFERENCES batches(id),
+        broker_batch_id text NOT NULL REFERENCES batches(id),
+        status text NOT NULL DEFAULT 'WAITING_INPUTS',
+        run_id text UNIQUE REFERENCES runs(id),
+        error text,
+        created_at timestamptz NOT NULL DEFAULT now()
+    );
+
+CREATE INDEX workflows_pending ON workflows(status,created_at);
+CREATE TRIGGER protect_published_insert BEFORE INSERT ON comparison_groups FOR EACH ROW EXECUTE FUNCTION protect_published_insert();
+CREATE TRIGGER protect_published_insert BEFORE INSERT ON findings FOR EACH ROW EXECUTE FUNCTION protect_published_insert();
+CREATE TRIGGER protect_published_insert BEFORE INSERT ON assignments FOR EACH ROW EXECUTE FUNCTION protect_published_insert();

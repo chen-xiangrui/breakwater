@@ -2,9 +2,9 @@
 from copy import deepcopy
 from decimal import Decimal
 import pytest
-from breakwater.domain import normalize,decimal_value,compare,evidence_fingerprint,stable_digest,safe_csv
+from breakwater.domain import DEFAULT_RULES,normalize,decimal_value,compare,evidence_fingerprint,stable_digest,safe_csv
 
-RULES={'price_tolerance':'0.01','quantity_tolerance':'0'}
+RULES=DEFAULT_RULES
 
 
 def row(**updates):

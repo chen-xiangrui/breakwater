@@ -26,7 +26,7 @@ def demo_only():
         raise HTTPException(403,'Demo controls are disabled')
 
 
-# Check database connectivity and return service health.
+#   CHECK database connectivity: SELECT 1; no table data needed.
 @app.get('/api/health')
 def health():
     with transaction() as c:
@@ -35,7 +35,8 @@ def health():
     return {'status':'ok','product':'breakwater','demo_mode':DEMO}
 
 
-# List visible scopes with optional filters and published run summaries.
+#   READ scopes: available reconciliation scopes, with optional filters.
+#   READ runs: published run status, sequence, and metrics.
 @app.get('/api/scopes')
 def scopes(business_date:date|None=None,broker_id:str|None=None,dataset_id:str|None=None):
     with transaction() as c:
@@ -47,7 +48,8 @@ def scopes(business_date:date|None=None,broker_id:str|None=None,dataset_id:str|N
             ORDER BY s.business_date DESC,s.id""",day=business_date,broker=broker_id,dataset=dataset_id)
 
 
-# Create a scope and its expected deliveries, or return an existing match.
+#   READ/WRITE idempotency: reuse matching requests or reject conflicting keys.
+#   READ/WRITE scopes + deliveries: create the scope and expected arrivals, or reuse matching setup.
 @app.post('/api/scopes',status_code=201,response_model=ScopeResponse,responses={200:{'model':ScopeResponse,'description':'Existing scope'}})
 def register_scope(data:ScopeCreate,response:Response,idempotency_key:str=Header(...)):
     scope,created=create_scope(data,idempotency_key)
@@ -57,7 +59,8 @@ def register_scope(data:ScopeCreate,response:Response,idempotency_key:str=Header
     return scope
 
 
-# Return expected deliveries, arrival states, and uploaded revisions for a scope.
+#   READ scopes + deliveries: reconciliation context and expected/arrived/overdue files.
+#   READ batches: uploaded revisions for each source.
 @app.get('/api/scopes/{sid}/deliveries')
 def deliveries(sid:str):
     with transaction() as c:
@@ -72,7 +75,11 @@ def deliveries(sid:str):
         return {'scope':scope,'deliveries':ds}
 
 
-# Store a CSV upload and register its batch using the supplied manifest.
+#   STORE file: save the uploaded CSV by checksum.
+#   READ/WRITE idempotency: reuse matching upload requests.
+#   READ scopes + batches: validate context and revision; WRITE batches: register file and checks.
+#   UPDATE deliveries: record first arrival.
+#   WRITE work + outbox: schedule parse when initial checks pass.
 @app.post('/api/uploads',status_code=202)
 def upload(file:UploadFile=File(...),manifest:str=Form(...),idempotency_key:str=Header(...)):
     # Validate the producer-supplied manifest before registering the uploaded file.
@@ -91,7 +98,9 @@ def upload(file:UploadFile=File(...),manifest:str=Form(...),idempotency_key:str=
     return register_upload(m,key,size,file.filename,idempotency_key)
 
 
-# Return batch details, task progress, and committed row counts.
+#   READ batches: validation status, checks, and file metadata.
+#   READ work: batch processing progress.
+#   COUNT records + rejections: committed accepted and rejected row counts.
 @app.get('/api/batches/{bid}')
 def batch(bid:str):
     with transaction() as c:
@@ -103,7 +112,12 @@ def batch(bid:str):
         return b
 
 
-# Store both CSVs and create a workflow that reconciles them after validation.
+#   STORE files: save both CSVs; READ files: validate headers and count logical records.
+#   READ scopes + batches: retrieve context and allocate source revisions.
+#   READ/WRITE idempotency: reuse matching workflow and upload requests.
+#   WRITE batches + workflows: register both inputs and link them in a waiting workflow.
+#   UPDATE deliveries: record first arrivals.
+#   WRITE work + outbox: schedule parse tasks when initial checks pass.
 @app.post('/api/workflows',status_code=202)
 def upload_workflow(internal_file:UploadFile=File(...),broker_file:UploadFile=File(...),
                     scope_id:str=Form(...),complete:bool=Form(False),idempotency_key:str=Header(...)):
@@ -126,7 +140,9 @@ def upload_workflow(internal_file:UploadFile=File(...),broker_file:UploadFile=Fi
     return create_workflow(scope_id,files,complete,idempotency_key)
 
 
-# Return the latest workflow and its input and run progress for a scope.
+#   READ workflows: latest linked inputs and run for scope_id.
+#   READ batches: input filenames, statuses, and errors.
+#   READ runs: current run status, errors, sequence, and report status.
 @app.get('/api/workflows')
 def latest_workflow(scope_id:str):
     from breakwater.workflows import WORKFLOW_QUERY
@@ -135,7 +151,9 @@ def latest_workflow(scope_id:str):
         return one(c,WORKFLOW_QUERY+' WHERE w.scope_id=:scope ORDER BY w.created_at DESC,w.id LIMIT 1',scope=scope_id)
 
 
-# Return one workflow with its input and run progress.
+#   READ workflows: linked inputs and run for this workflow.
+#   READ batches: input filenames, statuses, and errors.
+#   READ runs: current run status, errors, sequence, and report status.
 @app.get('/api/workflows/{wid}')
 def workflow(wid:str):
     from breakwater.workflows import WORKFLOW_QUERY
@@ -144,7 +162,8 @@ def workflow(wid:str):
         return require(one(c,WORKFLOW_QUERY+' WHERE w.id=:id',id=wid),'Workflow')
 
 
-# Return a page of rejected source rows and their validation errors.
+#   READ batches: confirm the batch exists.
+#   READ/COUNT rejections: paginated invalid rows, validation reasons, and total.
 @app.get('/api/batches/{bid}/rejections')
 def rejections(bid:str,offset:int=Query(0,ge=0),limit:int=Query(25,ge=1,le=100)):
     with transaction() as c:
@@ -153,7 +172,8 @@ def rejections(bid:str,offset:int=Query(0,ge=0),limit:int=Query(25,ge=1,le=100))
                 'total':query(c,'SELECT count(*) FROM rejections WHERE batch_id=:id',id=bid).scalar()}
 
 
-# Download the original CSV file registered for a batch.
+#   READ batches: original filename and file storage key.
+#   DOWNLOAD file: stream the original upload from storage.
 @app.get('/api/batches/{bid}/source')
 def source(bid:str):
     with transaction() as c:
@@ -173,7 +193,11 @@ class RunRequest(BaseModel):
     fail_bucket:int|None=Field(default=None,ge=0,le=31)
 
 
-# Validate run options and schedule reconciliation of the selected batches.
+#   READ/WRITE idempotency: reuse matching run requests.
+#   READ scopes + batches: validate selected inputs and allocate the run sequence.
+#   READ runs: check active-run capacity; LOAD DEFAULT_RULES: validate mapping compatibility.
+#   WRITE runs: register pinned inputs and QUEUED status; UPDATE scopes: increment sequence.
+#   WRITE work + outbox: schedule prepare.
 @app.post('/api/runs',status_code=202)
 def create_run(data:RunRequest,idempotency_key:str=Header(...)):
     # Restrict deliberate pauses/failures to demo mode and require valid bucket indices.
@@ -186,14 +210,16 @@ def create_run(data:RunRequest,idempotency_key:str=Header(...)):
     return start_run(data.model_dump(),idempotency_key)
 
 
-# List the most recent reconciliation runs for a scope.
+#   READ runs: recent run history for a scope, ordered by sequence.
 @app.get('/api/runs')
 def runs(scope_id:str='demo-scope',limit:int=Query(50,ge=1,le=100)):
     with transaction() as c:
         return many(c,'SELECT * FROM runs WHERE scope_id=:scope ORDER BY sequence DESC LIMIT :limit',scope=scope_id,limit=limit)
 
 
-# Return a run with its pinned inputs and processing tasks.
+#   READ runs: status, outcome, metrics, and report metadata.
+#   READ batches: selected input revisions.
+#   READ work: partition progress and all other run tasks.
 @app.get('/api/runs/{rid}')
 def run(rid:str):
     with transaction() as c:
@@ -205,7 +231,8 @@ def run(rid:str):
         return r
 
 
-# Return partition tasks and execution attempt history for a run.
+#   READ work: partition tasks and bucket progress.
+#   READ attempts + work: attempt history for all tasks in this run.
 @app.get('/api/runs/{rid}/partitions')
 def partitions(rid:str):
     with transaction() as c:
@@ -213,7 +240,8 @@ def partitions(rid:str):
             'attempts':many(c,'SELECT a.* FROM attempts a JOIN work w ON w.id=a.work_id WHERE w.run_id=:id ORDER BY a.started_at',id=rid)}
 
 
-# Return filtered comparison results and indicate whether they are provisional.
+#   READ runs: determine whether results are provisional.
+#   READ/COUNT comparison_groups: filtered outcomes, evidence, and total.
 @app.get('/api/runs/{rid}/results')
 def results(rid:str,outcome:str|None=None,offset:int=Query(0,ge=0),limit:int=Query(25,ge=1,le=100)):
     with transaction() as c:
@@ -226,7 +254,8 @@ def results(rid:str,outcome:str|None=None,offset:int=Query(0,ge=0),limit:int=Que
                 'total':query(c,f'SELECT count(*) FROM comparison_groups WHERE {where}',**params).scalar()}
 
 
-# Compare findings between two completed runs from the same scope.
+#   READ runs: validate both runs are completed and belong to the same scope.
+#   READ findings + comparison_groups: classify issues as new, persisted, cleared, absent, or unassessable.
 @app.get('/api/runs/{rid}/diff')
 def diff(rid:str,previous_run_id:str):
     with transaction() as c:
@@ -248,7 +277,8 @@ def diff(rid:str,previous_run_id:str):
         return {'items':rows,'counts':{k:sum(x['change']==k for x in rows) for k in ['NEW','PERSISTED','CLEARED','NOT_PRESENT_IN_INPUTS','UNASSESSABLE']}}
 
 
-# Download a completed run report with its checksum.
+#   READ runs: report readiness, filename sequence, storage key, and checksum.
+#   DOWNLOAD file: stream the generated CSV from storage with its checksum header.
 @app.get('/api/runs/{rid}/report')
 def report(rid:str):
     with transaction() as c:
@@ -260,7 +290,7 @@ def report(rid:str):
     return FileResponse(storage.path(r['report_key']),media_type='text/csv',filename=f'breakwater-run-{r["sequence"]}.csv',headers={'X-Artifact-SHA256':r['report_sha256']})
 
 
-# Return a filtered page of cases and scope-wide status counts.
+#   READ/COUNT cases: filtered issue queue, total, and scope-wide workflow/detection counts.
 @app.get('/api/cases')
 def cases(scope_id:str='demo-scope',q:str='',family:str='',workflow:str='',detection:str='',assignee:str='',account:str='',instrument:str='',
           offset:int=Query(0,ge=0),limit:int=Query(25,ge=1,le=100)):
@@ -287,7 +317,9 @@ def cases(scope_id:str='demo-scope',q:str='',family:str='',workflow:str='',detec
             'summary':many(c,'SELECT detection,workflow,count(*) AS count FROM cases WHERE scope_id=:scope GROUP BY detection,workflow',scope=scope_id)}
 
 
-# Return a case with its audit events and observations from past runs.
+#   READ cases: current investigation details and evidence.
+#   READ case_events: audit history.
+#   READ observations + runs: assessments across run sequences.
 @app.get('/api/cases/{cid}')
 def case(cid:str):
     with transaction() as c:
@@ -306,7 +338,8 @@ class CaseAction(BaseModel):
     reason:str=Field(default='',max_length=4000)
 
 
-# Apply a demo investigator action to a case.
+#   READ/UPDATE cases: validate expected version and apply claim, note, waive, resolve, or review.
+#   WRITE case_events: append the investigator action and reason in the same transaction.
 @app.post('/api/cases/{cid}/actions')
 def action(cid:str,data:CaseAction):
     # Demo identities may mutate case state only while demo controls are enabled.
@@ -320,7 +353,11 @@ class DemoRequest(BaseModel):
     rows:int=Field(default=240,ge=60,le=100000)
 
 
-# Generate and ingest synthetic files for the requested demo scenario.
+#   READ scopes + batches: scope metadata and next source revisions.
+#   STORE files: generate and save scenario CSVs.
+#   READ/WRITE idempotency; WRITE batches: register generated uploads.
+#   UPDATE deliveries: record first arrivals.
+#   WRITE work + outbox: schedule parse when initial checks pass.
 @app.post('/api/demo/scenarios/{name}',status_code=202)
 def demo(name:Literal['breaks','corrected','missing','empty','corrupt','rejected'],data:DemoRequest):
     demo_only()
@@ -350,7 +387,10 @@ class WorkAction(BaseModel):
     action:Literal['pause','release','redeliver','retry','fail_once']
 
 
-# Apply a demo task control or retry a failed report.
+#   READ work: lock the selected task and validate the requested action.
+#   UPDATE work: pause/release, inject a failure, or reset a failed report for retry.
+#   UPDATE runs + WRITE outbox: reset report status and schedule its retry.
+#   SEND RabbitMQ message: redeliver directly when action=redeliver.
 @app.post('/api/demo/work/{wid}')
 def work_action(wid:str,data:WorkAction):
     # Lock the selected task before changing its pause, failure, or retry settings.
@@ -386,7 +426,9 @@ def work_action(wid:str,data:WorkAction):
     return {'ok':True}
 
 
-# Return task counts, pending dispatch counts, and recent execution attempts.
+#   READ work: task counts by kind and state.
+#   READ outbox + work: count pending dispatch entries for eligible work states.
+#   READ attempts + work: latest 30 execution attempts and task details.
 @app.get('/api/operations')
 def operations():
     with transaction() as c:

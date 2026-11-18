@@ -7,6 +7,15 @@ from decimal import Decimal, InvalidOperation, localcontext
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
+# Shared comparison rules for every execution-v1 run.
+DEFAULT_RULES = {
+    'price_tolerance': '0.01',
+    'quantity_tolerance': '0',
+    'mapping_version': 'equities-v1',
+    'mode': 'EXECUTION',
+    'timestamp_comparison': False,
+}
+
 # Source columns map by position to the shared field names in CANONICAL.
 INTERNAL = ['trade_id','account','instrument','side','quantity','execution_price','currency','executed_at']
 BROKER = ['execution_ref','client_account','symbol','buy_sell','filled_qty','fill_price','ccy','execution_time']
